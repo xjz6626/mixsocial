@@ -1,0 +1,312 @@
+name: Android release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and publish
+        required: true
+        default: v0.1.0
+        type: string
+      allow_debug_signing:
+        description: Allow a debug-signed pre-release when signing secrets are unavailable
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  FLUTTER_VERSION: 3.47.1
+  ANDROID_API_LEVEL: "37"
+  ANDROID_BUILD_TOOLS_VERSION: 36.0.0
+  ANDROID_NDK_VERSION: 28.2.13676358
+  GOMOBILE_VERSION: v0.0.0-20250911085028-6912353760cf
+
+jobs:
+  release:
+    name: Build and publish Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Validate release tag and version
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          package_version="$(sed -nE 's/^version:[[:space:]]*([^+[:space:]]+).*/\1/p' mobile/pubspec.yaml)"
+          if [[ -z "$package_version" || "v$package_version" != "$RELEASE_TAG" ]]; then
+            echo "Tag $RELEASE_TAG does not match pubspec version $package_version" >&2
+            exit 1
+          fi
+
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "apk_name=mixsocial-android-$RELEASE_TAG.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Gradle Wrapper for legacy tags
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ -x mobile/android/gradlew && -f mobile/android/gradle/wrapper/gradle-wrapper.jar ]]; then
+            exit 0
+          fi
+
+          git checkout origin/main -- \
+            mobile/android/gradlew \
+            mobile/android/gradlew.bat \
+            mobile/android/gradle/wrapper/gradle-wrapper.jar
+          chmod +x mobile/android/gradlew
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            mobile/android/gradle/wrapper/gradle-wrapper.properties
+            mobile/android/**/*.gradle
+            mobile/android/**/*.gradle.kts
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Install Android SDK components
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-$ANDROID_API_LEVEL" \
+            "build-tools;$ANDROID_BUILD_TOOLS_VERSION" \
+            "ndk;$ANDROID_NDK_VERSION"
+
+      - name: Install Flutter
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git clone --depth 1 --branch "$FLUTTER_VERSION" \
+            https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Prepare Flutter
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          flutter config --no-analytics
+          flutter --version
+          flutter precache --android
+          cd mobile
+          flutter pub get
+
+      - name: Install gomobile tools
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          go install "golang.org/x/mobile/cmd/gomobile@$GOMOBILE_VERSION"
+          go install "golang.org/x/mobile/cmd/gobind@$GOMOBILE_VERSION"
+
+      - name: Run checks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          go test ./...
+          go vet -buildvcs=false ./...
+          cd mobile
+          flutter analyze
+          flutter test
+
+      - name: Build Go Android AAR
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          gomobile init
+          make mobile-aar
+
+      - name: Configure APK signing
+        id: signing
+        env:
+          ALLOW_DEBUG_SIGNING: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_debug_signing || false }}
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          present=0
+          for value in "$KEYSTORE_BASE64" "$KEYSTORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD"; do
+            if [[ -n "$value" ]]; then
+              present=$((present + 1))
+            fi
+          done
+
+          if [[ "$present" -ne 0 && "$present" -ne 4 ]]; then
+            echo "All four Android signing secrets must be configured together." >&2
+            exit 1
+          fi
+
+          supports_release_signing=false
+          if grep -q 'ANDROID_KEYSTORE_PATH' mobile/android/app/build.gradle.kts; then
+            supports_release_signing=true
+          fi
+
+          if [[ "$present" -eq 4 && "$supports_release_signing" == true ]]; then
+            keystore_path="$RUNNER_TEMP/mixsocial-release.jks"
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore_path"
+            echo "kind=release" >> "$GITHUB_OUTPUT"
+            echo "keystore_path=$keystore_path" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$ALLOW_DEBUG_SIGNING" != true ]]; then
+            if [[ "$supports_release_signing" != true ]]; then
+              echo "This legacy tag does not support release signing." >&2
+            else
+              echo "Android signing secrets are required for tag-triggered releases." >&2
+            fi
+            exit 1
+          fi
+
+          echo "::warning::Publishing a debug-signed preview. It may not upgrade over APKs signed by another key."
+          echo "kind=debug" >> "$GITHUB_OUTPUT"
+          echo "keystore_path=" >> "$GITHUB_OUTPUT"
+
+      - name: Build release APK
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ steps.signing.outputs.keystore_path }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd mobile
+          flutter build apk --release
+
+      - name: Verify and package APK
+        env:
+          APK_NAME: ${{ steps.release.outputs.apk_name }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          source_apk="mobile/build/app/outputs/flutter-apk/app-release.apk"
+          mkdir -p dist
+          cp "$source_apk" "dist/$APK_NAME"
+          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS_VERSION/apksigner" \
+            verify --verbose "dist/$APK_NAME"
+          unzip -l "dist/$APK_NAME" > "$RUNNER_TEMP/apk-contents.txt"
+          grep -q 'lib/arm64-v8a/libgojni.so' "$RUNNER_TEMP/apk-contents.txt"
+          grep -q 'lib/x86_64/libgojni.so' "$RUNNER_TEMP/apk-contents.txt"
+          cd dist
+          sha256sum "$APK_NAME" > "$APK_NAME.sha256"
+
+      - name: Create release and upload assets
+        uses: actions/github-script@v9
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          APK_NAME: ${{ steps.release.outputs.apk_name }}
+          SIGNING_KIND: ${{ steps.signing.outputs.kind }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const { owner, repo } = context.repo;
+            const tag = process.env.RELEASE_TAG;
+            const apkName = process.env.APK_NAME;
+            const signingKind = process.env.SIGNING_KIND;
+            let release;
+
+            try {
+              release = (await github.rest.repos.getReleaseByTag({ owner, repo, tag })).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              release = (await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tag,
+                name: `Mixsocial ${tag}`,
+                body: `Android preview build. Signing: ${signingKind}. SHA-256 is attached.`,
+                draft: true,
+                prerelease: true,
+                generate_release_notes: true,
+              })).data;
+            }
+
+            const assets = [
+              { file: path.join('dist', apkName), name: apkName, type: 'application/vnd.android.package-archive' },
+              { file: path.join('dist', `${apkName}.sha256`), name: `${apkName}.sha256`, type: 'text/plain' },
+            ];
+            const existingAssets = (await github.rest.repos.listReleaseAssets({
+              owner,
+              repo,
+              release_id: release.id,
+              per_page: 100,
+            })).data;
+
+            for (const asset of assets) {
+              for (const existing of existingAssets.filter(item => item.name === asset.name)) {
+                await github.rest.repos.deleteReleaseAsset({
+                  owner,
+                  repo,
+                  asset_id: existing.id,
+                });
+              }
+              const data = fs.readFileSync(asset.file);
+              await github.rest.repos.uploadReleaseAsset({
+                owner,
+                repo,
+                release_id: release.id,
+                name: asset.name,
+                data,
+                headers: {
+                  'content-type': asset.type,
+                  'content-length': data.length,
+                },
+              });
+            }
+
+            await github.rest.repos.updateRelease({
+              owner,
+              repo,
+              release_id: release.id,
+              name: `Mixsocial ${tag}`,
+              draft: false,
+              prerelease: true,
+            });

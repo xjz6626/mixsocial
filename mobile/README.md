@@ -34,6 +34,24 @@ AAR 输出到
 `mobile/packages/mixsocial_core/android/libs/mobilecore.aar`，包含 Android ARM64 与
 x86_64，生成物不提交到 Git。APK 输出到 `mobile/build/app/outputs/flutter-apk/`。
 
+## GitHub Actions 发布
+
+`.github/workflows/android-release.yml` 在推送 `v*` 标签时构建并发布 Android APK，
+也可以从 Actions 页面手动选择已有标签。工作流会校验标签与 `pubspec.yaml` 版本、
+运行 Go/Flutter 检查、生成 AAR、验证 APK 签名，并同时上传 SHA-256 文件。
+
+正式标签自动发布前，需要在仓库 Actions Secrets 中配置以下四项，凭据不会进入
+源码、普通数据库或构建日志：
+
+- `ANDROID_KEYSTORE_BASE64`
+- `ANDROID_KEYSTORE_PASSWORD`
+- `ANDROID_KEY_ALIAS`
+- `ANDROID_KEY_PASSWORD`
+
+已有的 `v0.1.0` 可以通过手动运行工作流并允许调试签名来发布预览版。未配置上述
+Secrets 时，后续由标签自动触发的构建会停止发布，避免不同的临时调试证书导致 APK
+无法覆盖升级。
+
 ## 真机验证闸门
 
 在继续 SQLite/媒体缓存和 iOS 适配前，至少完成以下 Android 真机验证：
