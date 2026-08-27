@@ -7,6 +7,8 @@
 - 统一模型：条目、作者、媒体、统计、详情和评论。
 - 混合信息流：并发读取各来源，按来源轮流合并；单个来源失败不会拖垮另一来源。
 - 三个首页频道：按 `1` / `2` / `3` 切换推荐、热榜和关注，仍可用 `Tab` 过滤平台。
+- 信息流条目之间保留空行；详情页会自动使用 Kitty、iTerm2 或 Sixel 原生图片协议，不支持时回退到 ANSI 真彩半块，支持 JPEG、PNG、GIF 和 WebP。
+- 每次刷出列表后会用受控并发在后台缓存全部话题详情及每个话题最多 9 项媒体；详情缓存覆盖当前列表，媒体使用约 192 MiB 内存 LRU 和约 512 MiB 磁盘 LRU，切换话题不再重复下载和解码。
 - 百度贴吧：直接用 Go 编解码移动端 protobuf；支持全站热议榜、按吧主题、主题楼层、百度 App 扫码登录、BDUSS 备用登录和已关注贴吧内容，无 Python 运行时。
 - 小红书：安装脚本会把固定版本的 `xiaohongshu-mcp` 一并装到 `mixsocial` 旁边；`mixsocial` 启动和回收子进程，用户无需手动运行 sidecar。可在 TUI 内扫码登录，Cookie 和网页签名仍由成熟的上游实现管理。
 - 所有会改变账号状态的操作都要求在 TUI 中再次按 `y` 确认。
@@ -98,6 +100,10 @@ mixsocial --xhs-managed=false
 
 小红书搜索接口支持“已关注”筛选，但它必须同时给出关键词，无法稳定组成完整关注首页，因此没有被冒充成关注流。
 
+视频笔记会显示封面、分辨率、时长和 sidecar 返回的有时效视频流链接。终端内不解码连续视频帧；支持 OSC 8 的终端可直接点击“视频流”，其他终端仍会显示截短后的地址。图片或封面加载失败不会阻塞正文和评论。
+
+图片协议默认根据终端环境自动选择，也可以用 `--image-protocol=kitty|iterm2|sixel|blocks` 或 `MIXSOCIAL_IMAGE_PROTOCOL` 强制指定；界面底部会显示当前实际使用的协议。只有 `TERM=xterm-256color` 等通用标记时无法安全判断图形能力，自动模式会使用标有“低清”的 ANSI 字符块。tmux / GNU Screen 无法可靠探测是否已开启图形 passthrough，因此自动模式也会使用 `blocks`；配置好 passthrough 后可显式指定原生协议。媒体磁盘缓存位于系统用户缓存目录的 `mixsocial/media` 子目录中。
+
 ## 键位
 
 | 键 | 操作 |
@@ -134,6 +140,7 @@ mixsocial --xhs-managed=false
 | `--xhs-managed` | `true` | 自动启动并回收 sidecar |
 | `--xhs-sidecar` / `MIXSOCIAL_XHS_SIDECAR` | 自动查找 | sidecar 可执行文件路径 |
 | `--xhs-startup-timeout` | `15m` | 首次浏览器下载和启动的最长等待时间 |
+| `--image-protocol` / `MIXSOCIAL_IMAGE_PROTOCOL` | 自动检测 | 图片渲染协议：`auto`、`kitty`、`iterm2`、`sixel` 或 `blocks` |
 | `MIXSOCIAL_XHS_SESSION` | 用户配置目录 | 小红书会话文件 |
 | `MIXSOCIAL_XHS_LOG` | 用户配置目录 | sidecar 日志文件 |
 | `--timeout` | `45s` | 单次请求超时 |

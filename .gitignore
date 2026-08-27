@@ -1,3 +1,5 @@
 /mixsocial
 /dist/
 *.log
+/mobile/packages/mixsocial_core/android/libs/*.aar
+/mobile/packages/mixsocial_core/android/libs/*-sources.jar

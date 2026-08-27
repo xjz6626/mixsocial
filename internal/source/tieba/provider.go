@@ -106,7 +106,7 @@ func (*Provider) Name() string        { return "百度贴吧" }
 func (*Provider) Capabilities() source.Capability {
 	return source.CapabilityFeed | source.CapabilitySearch | source.CapabilityDetail |
 		source.CapabilityHot | source.CapabilityFollowing | source.CapabilityCredentialLogin |
-		source.CapabilityQRCodeLogin
+		browserLoginCapability()
 }
 
 func (p *Provider) Feed(ctx context.Context, cursor string) (domain.Page, error) {
@@ -426,6 +426,7 @@ func decodePostsResponse(body []byte, ref domain.Ref) (domain.Detail, error) {
 		}
 		if index == 0 || post.Ref.ID == ref.ParentID {
 			detail.Body = post.Body
+			detail.Media = appendUniqueMedia(detail.Media, post.Media...)
 			if detail.Author.Name == "" {
 				detail.Author = post.Author
 			}
@@ -442,19 +443,35 @@ func decodePostsResponse(body []byte, ref domain.Ref) (domain.Detail, error) {
 	return detail, nil
 }
 
+func appendUniqueMedia(existing []domain.Media, additions ...domain.Media) []domain.Media {
+	seen := make(map[string]bool, len(existing)+len(additions))
+	for _, media := range existing {
+		seen[media.Kind+"\x00"+media.URL+"\x00"+media.PreviewURL] = true
+	}
+	for _, media := range additions {
+		key := media.Kind + "\x00" + media.URL + "\x00" + media.PreviewURL
+		if key == "\x00\x00" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		existing = append(existing, media)
+	}
+	return existing
+}
+
 func decodePost(encoded []byte, threadRef domain.Ref) (domain.Comment, error) {
 	fields, err := parseFields(encoded)
 	if err != nil {
 		return domain.Comment{}, err
 	}
-	body, _ := decodeContents(allBytes(fields, 5))
+	body, media := decodeContents(allBytes(fields, 5))
 	author, _ := decodeAuthor(firstBytes(fields, 23))
 	if author.ID == "0" || author.ID == "" {
 		author.ID = strconv.FormatUint(firstUint(fields, 19), 10)
 	}
 	return domain.Comment{
 		Ref:    domain.Ref{Source: domain.SourceTieba, ID: strconv.FormatUint(firstUint(fields, 1), 10), ParentID: threadRef.ID, URL: threadRef.URL},
-		Author: author, Body: body, PublishedAt: unixTime(firstUint(fields, 4)),
+		Author: author, Body: body, PublishedAt: unixTime(firstUint(fields, 4)), Media: media,
 	}, nil
 }
 
@@ -472,7 +489,12 @@ func decodeAuthor(encoded []byte) (domain.Author, error) {
 	if portrait != "" {
 		avatar = "https://himg.bdimg.com/sys/portrait/item/" + url.PathEscape(portrait)
 	}
-	return domain.Author{ID: strconv.FormatUint(firstUint(fields, 2), 10), Name: name, Avatar: avatar}, nil
+	id := strconv.FormatUint(firstUint(fields, 2), 10)
+	profile := domain.ProfileRef{Source: domain.SourceTieba, ID: id}
+	if name != "" {
+		profile.URL = "https://tieba.baidu.com/home/main?un=" + url.QueryEscape(name)
+	}
+	return domain.Author{Ref: profile, ID: id, Name: name, Avatar: avatar}, nil
 }
 
 func decodeUsers(encoded [][]byte) map[string]domain.Author {
@@ -497,6 +519,18 @@ func decodeContents(encoded [][]byte) (string, []domain.Media) {
 		if text := strings.TrimSpace(firstString(fields, 2)); text != "" {
 			textParts = append(textParts, text)
 		}
+		if firstUint(fields, 1) == 5 {
+			videoURL := firstString(fields, 3)
+			previewURL := firstString(fields, 4)
+			if videoURL != "" || previewURL != "" {
+				media = append(media, domain.Media{
+					Kind: "video", URL: videoURL, PreviewURL: previewURL,
+					Width: int(firstUint(fields, 18)), Height: int(firstUint(fields, 19)),
+					Duration: time.Duration(firstUint(fields, 13)) * time.Second,
+				})
+			}
+			continue
+		}
 		imageURL := firstString(fields, 25)
 		if imageURL == "" {
 			imageURL = firstString(fields, 9)
@@ -508,7 +542,7 @@ func decodeContents(encoded [][]byte) (string, []domain.Media) {
 			imageURL = firstString(fields, 4)
 		}
 		if imageURL != "" {
-			media = append(media, domain.Media{Kind: "image", URL: imageURL, Width: int(firstUint(fields, 18)), Height: int(firstUint(fields, 19))})
+			media = append(media, domain.Media{Kind: "image", URL: imageURL, PreviewURL: imageURL, Width: int(firstUint(fields, 18)), Height: int(firstUint(fields, 19))})
 		}
 	}
 	return strings.Join(textParts, ""), media

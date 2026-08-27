@@ -28,3 +28,5 @@
 - `github.com/liyue201/goqr`（MIT）：从 sidecar 返回的二维码图片中恢复原始载荷。
 - `github.com/makiuchi-d/gozxing`（MIT / Apache-2.0）：兼容无标准留白图片的备用纯 Go 二维码解码器。
 - `github.com/skip2/go-qrcode`（MIT）：按二维码模块边界和标准留白区重新编码，供终端稳定显示。
+- `github.com/charmbracelet/x/ansi`（MIT）：编码 Kitty、iTerm2、Sixel 控制序列及终端复用器 passthrough。
+- `golang.org/x/image`（BSD-3-Clause）：解码 WebP，并在原生终端图片编码前做高质量缩放。

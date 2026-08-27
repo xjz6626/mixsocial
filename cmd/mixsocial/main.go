@@ -22,18 +22,19 @@ import (
 
 func main() {
 	var (
-		demoMode     = flag.Bool("demo", false, "use offline demo data only")
-		useTieba     = flag.Bool("tieba", true, "enable Baidu Tieba")
-		useXHS       = flag.Bool("xhs", true, "enable Xiaohongshu")
-		forums       = flag.String("tieba-forums", envOr("MIXSOCIAL_TIEBA_FORUMS", ""), "comma-separated Tieba home forums")
-		tiebaSession = flag.String("tieba-session", os.Getenv("MIXSOCIAL_TIEBA_SESSION"), "Tieba session file (user config directory by default)")
-		browserPath  = flag.String("browser", os.Getenv("MIXSOCIAL_BROWSER"), "Chromium path for embedded login (auto-detected by default)")
-		xhsURL       = flag.String("xhs-endpoint", envOr("MIXSOCIAL_XHS_ENDPOINT", "http://127.0.0.1:18060"), "xiaohongshu-mcp HTTP endpoint")
-		xhsToken     = flag.String("xhs-token", os.Getenv("MIXSOCIAL_XHS_TOKEN"), "optional sidecar bearer token")
-		xhsManaged   = flag.Bool("xhs-managed", true, "automatically start and stop the Xiaohongshu sidecar")
-		xhsBinary    = flag.String("xhs-sidecar", os.Getenv("MIXSOCIAL_XHS_SIDECAR"), "path to xiaohongshu-mcp (auto-detected by default)")
-		xhsStartup   = flag.Duration("xhs-startup-timeout", 15*time.Minute, "maximum time for first sidecar/browser startup")
-		timeout      = flag.Duration("timeout", 45*time.Second, "request timeout")
+		demoMode      = flag.Bool("demo", false, "use offline demo data only")
+		useTieba      = flag.Bool("tieba", true, "enable Baidu Tieba")
+		useXHS        = flag.Bool("xhs", true, "enable Xiaohongshu")
+		forums        = flag.String("tieba-forums", envOr("MIXSOCIAL_TIEBA_FORUMS", ""), "comma-separated Tieba home forums")
+		tiebaSession  = flag.String("tieba-session", os.Getenv("MIXSOCIAL_TIEBA_SESSION"), "Tieba session file (user config directory by default)")
+		browserPath   = flag.String("browser", os.Getenv("MIXSOCIAL_BROWSER"), "Chromium path for embedded login (auto-detected by default)")
+		xhsURL        = flag.String("xhs-endpoint", envOr("MIXSOCIAL_XHS_ENDPOINT", "http://127.0.0.1:18060"), "xiaohongshu-mcp HTTP endpoint")
+		xhsToken      = flag.String("xhs-token", os.Getenv("MIXSOCIAL_XHS_TOKEN"), "optional sidecar bearer token")
+		xhsManaged    = flag.Bool("xhs-managed", true, "automatically start and stop the Xiaohongshu sidecar")
+		xhsBinary     = flag.String("xhs-sidecar", os.Getenv("MIXSOCIAL_XHS_SIDECAR"), "path to xiaohongshu-mcp (auto-detected by default)")
+		xhsStartup    = flag.Duration("xhs-startup-timeout", 15*time.Minute, "maximum time for first sidecar/browser startup")
+		imageProtocol = flag.String("image-protocol", envOr("MIXSOCIAL_IMAGE_PROTOCOL", "auto"), "image protocol: auto, kitty, iterm2, sixel, or blocks")
+		timeout       = flag.Duration("timeout", 45*time.Second, "request timeout")
 	)
 	flag.Parse()
 
@@ -104,6 +105,10 @@ func main() {
 	mixed := source.NewMixed(readers...)
 	defer mixed.Close()
 	model := tui.New(mixed, *timeout)
+	if err := model.SetImageProtocol(*imageProtocol); err != nil {
+		fmt.Fprintln(os.Stderr, "mixsocial:", err)
+		os.Exit(2)
+	}
 	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := program.Run(); err != nil {
 		if managedSidecar != nil {

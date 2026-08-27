@@ -94,6 +94,15 @@ func (m *Mixed) Interactor(id domain.SourceID) (Interactor, bool) {
 	return interactor, ok
 }
 
+func (m *Mixed) RelationshipInteractor(id domain.SourceID) (RelationshipInteractor, bool) {
+	reader, ok := m.readers[id]
+	if !ok {
+		return nil, false
+	}
+	interactor, ok := reader.(RelationshipInteractor)
+	return interactor, ok
+}
+
 func (m *Mixed) Authenticator(id domain.SourceID) (Authenticator, bool) {
 	reader, ok := m.readers[id]
 	if !ok {

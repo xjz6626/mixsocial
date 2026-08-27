@@ -282,8 +282,18 @@ func (p *Provider) Detail(ctx context.Context, ref domain.Ref) (domain.Detail, e
 	for _, image := range note.ImageList {
 		imageURL := firstNonEmpty(image.URLDefault, image.URLPre)
 		if imageURL != "" {
-			item.Media = append(item.Media, domain.Media{Kind: "image", URL: imageURL, Width: image.Width, Height: image.Height})
+			item.Media = append(item.Media, domain.Media{Kind: "image", URL: imageURL, PreviewURL: imageURL, Width: image.Width, Height: image.Height})
 		}
+	}
+	if stream, ok := selectVideoStream(note.Video); ok {
+		duration := time.Duration(stream.Duration) * time.Millisecond
+		if duration == 0 && note.Video != nil {
+			duration = time.Duration(note.Video.Capa.Duration) * time.Second
+		}
+		item.Media = append(item.Media, domain.Media{
+			Kind: "video", URL: stream.MasterURL, Format: firstNonEmpty(stream.StreamDesc, stream.QualityType, stream.Format),
+			Width: stream.Width, Height: stream.Height, Duration: duration,
+		})
 	}
 	detail := domain.Detail{Item: item, Body: note.Desc}
 	for _, comment := range payload.Data.Comments.List {
@@ -414,6 +424,15 @@ type noteCard struct {
 	User         user         `json:"user"`
 	InteractInfo interactInfo `json:"interactInfo"`
 	Cover        cover        `json:"cover"`
+	Video        *video       `json:"video,omitempty"`
+}
+
+type video struct {
+	Capa videoCapability `json:"capa"`
+}
+
+type videoCapability struct {
+	Duration int `json:"duration"`
 }
 
 type user struct {
@@ -438,6 +457,9 @@ type cover struct {
 	URL        string `json:"url"`
 	URLPre     string `json:"urlPre"`
 	URLDefault string `json:"urlDefault"`
+	InfoList   []struct {
+		URL string `json:"url"`
+	} `json:"infoList"`
 }
 
 type detailImage struct {
@@ -445,6 +467,27 @@ type detailImage struct {
 	Height     int    `json:"height"`
 	URLDefault string `json:"urlDefault"`
 	URLPre     string `json:"urlPre"`
+}
+
+type videoDetail struct {
+	Capa  videoCapability `json:"capa"`
+	Media videoMedia      `json:"media"`
+}
+
+type videoMedia struct {
+	Stream map[string][]videoStream `json:"stream"`
+}
+
+type videoStream struct {
+	MasterURL     string   `json:"masterUrl"`
+	BackupURLs    []string `json:"backupUrls"`
+	Format        string   `json:"format"`
+	Width         int      `json:"width"`
+	Height        int      `json:"height"`
+	Duration      int      `json:"duration"`
+	QualityType   string   `json:"qualityType"`
+	StreamDesc    string   `json:"streamDesc"`
+	DefaultStream int      `json:"defaultStream"`
 }
 
 type feedDetailData struct {
@@ -457,6 +500,7 @@ type feedDetailData struct {
 		User         user          `json:"user"`
 		InteractInfo interactInfo  `json:"interactInfo"`
 		ImageList    []detailImage `json:"imageList"`
+		Video        *videoDetail  `json:"video,omitempty"`
 	} `json:"note"`
 	Comments struct {
 		List    []comment `json:"list"`
@@ -488,31 +532,110 @@ func mapFeeds(feeds []feed) domain.Page {
 
 func mapFeed(feed feed) domain.Item {
 	name := firstNonEmpty(feed.NoteCard.User.Nickname, feed.NoteCard.User.NickName)
+	profile := xhsProfileRef(feed.NoteCard.User.UserID, feed.XsecToken)
 	item := domain.Item{
 		Ref: domain.Ref{
 			Source: domain.SourceXHS, ID: feed.ID, Token: feed.XsecToken,
 			URL: "https://www.xiaohongshu.com/explore/" + feed.ID + "?xsec_token=" + url.QueryEscape(feed.XsecToken),
 		},
 		Title:  feed.NoteCard.DisplayTitle,
-		Author: domain.Author{ID: feed.NoteCard.User.UserID, Name: name, Avatar: feed.NoteCard.User.Avatar},
+		Author: domain.Author{Ref: profile, ID: feed.NoteCard.User.UserID, Name: name, Avatar: feed.NoteCard.User.Avatar},
 		Stats: domain.Stats{
 			Likes: parseCount(feed.NoteCard.InteractInfo.LikedCount), Comments: parseCount(feed.NoteCard.InteractInfo.CommentCount),
 			Favorites: parseCount(feed.NoteCard.InteractInfo.CollectedCount), Shares: parseCount(feed.NoteCard.InteractInfo.SharedCount),
 		},
 		Liked: feed.NoteCard.InteractInfo.Liked, Favorited: feed.NoteCard.InteractInfo.Collected,
 	}
-	coverURL := firstNonEmpty(feed.NoteCard.Cover.URLDefault, feed.NoteCard.Cover.URLPre, feed.NoteCard.Cover.URL)
+	coverURL := firstNonEmpty(feed.NoteCard.Cover.URLDefault, feed.NoteCard.Cover.URLPre, feed.NoteCard.Cover.URL, firstCoverInfoURL(feed.NoteCard.Cover))
 	if coverURL != "" {
-		item.Media = append(item.Media, domain.Media{Kind: "image", URL: coverURL, Width: feed.NoteCard.Cover.Width, Height: feed.NoteCard.Cover.Height})
+		kind := "image"
+		if feed.NoteCard.Type == "video" {
+			kind = "video"
+		}
+		media := domain.Media{Kind: kind, PreviewURL: coverURL, Width: feed.NoteCard.Cover.Width, Height: feed.NoteCard.Cover.Height}
+		if kind == "image" {
+			media.URL = coverURL
+		} else if feed.NoteCard.Video != nil {
+			media.Duration = time.Duration(feed.NoteCard.Video.Capa.Duration) * time.Second
+		}
+		item.Media = append(item.Media, media)
 	}
 	return item
+}
+
+func xhsProfileRef(userID, token string) domain.ProfileRef {
+	profile := domain.ProfileRef{Source: domain.SourceXHS, ID: userID, Token: token}
+	if userID == "" {
+		return profile
+	}
+	profile.URL = "https://www.xiaohongshu.com/user/profile/" + url.PathEscape(userID)
+	if token != "" {
+		profile.URL += "?xsec_token=" + url.QueryEscape(token) + "&xsec_source=pc_note"
+	}
+	return profile
+}
+
+func firstCoverInfoURL(cover cover) string {
+	for _, info := range cover.InfoList {
+		if strings.TrimSpace(info.URL) != "" {
+			return info.URL
+		}
+	}
+	return ""
+}
+
+func selectVideoStream(video *videoDetail) (videoStream, bool) {
+	if video == nil {
+		return videoStream{}, false
+	}
+	keys := make([]string, 0, len(video.Media.Stream))
+	for codec := range video.Media.Stream {
+		keys = append(keys, codec)
+	}
+	sort.SliceStable(keys, func(i, j int) bool {
+		if keys[i] == "h264" {
+			return true
+		}
+		if keys[j] == "h264" {
+			return false
+		}
+		return keys[i] < keys[j]
+	})
+	var fallback videoStream
+	for _, codec := range keys {
+		for _, stream := range video.Media.Stream[codec] {
+			stream.MasterURL = firstNonEmpty(stream.MasterURL, firstStringValue(stream.BackupURLs))
+			if stream.MasterURL == "" {
+				continue
+			}
+			if stream.DefaultStream != 0 {
+				return stream, true
+			}
+			if fallback.MasterURL == "" || stream.Width*stream.Height < fallback.Width*fallback.Height {
+				fallback = stream
+			}
+		}
+		if fallback.MasterURL != "" && codec == "h264" {
+			return fallback, true
+		}
+	}
+	return fallback, fallback.MasterURL != ""
+}
+
+func firstStringValue(values []string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func mapComment(input comment, note domain.Ref) domain.Comment {
 	name := firstNonEmpty(input.UserInfo.Nickname, input.UserInfo.NickName)
 	result := domain.Comment{
 		Ref:    domain.Ref{Source: domain.SourceXHS, ID: input.ID, ParentID: note.ID, Token: note.Token},
-		Author: domain.Author{ID: input.UserInfo.UserID, Name: name, Avatar: input.UserInfo.Avatar},
+		Author: domain.Author{Ref: xhsProfileRef(input.UserInfo.UserID, ""), ID: input.UserInfo.UserID, Name: name, Avatar: input.UserInfo.Avatar},
 		Body:   input.Content, Likes: parseCount(input.LikeCount), PublishedAt: xhsTime(input.CreateTime),
 	}
 	for _, sub := range input.SubComments {

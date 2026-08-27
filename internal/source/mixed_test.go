@@ -14,6 +14,11 @@ type stubReader struct {
 	err   error
 }
 
+type relationshipStub struct{ stubReader }
+
+func (relationshipStub) Follow(context.Context, domain.ProfileRef, bool) error { return nil }
+func (relationshipStub) Block(context.Context, domain.ProfileRef, bool) error  { return nil }
+
 func (s stubReader) ID() domain.SourceID      { return s.id }
 func (s stubReader) Name() string             { return string(s.id) }
 func (s stubReader) Capabilities() Capability { return CapabilityFeed | CapabilitySearch }
@@ -48,5 +53,17 @@ func TestMixedRoundRobinAndPartialFailure(t *testing.T) {
 	}
 	if len(page.Items) != 2 || len(page.Notices) != 1 {
 		t.Fatalf("unexpected partial page: %+v", page)
+	}
+}
+
+func TestMixedExposesRelationshipInteractorOnlyWhenSupported(t *testing.T) {
+	plain := stubReader{id: domain.SourceTieba}
+	relationships := relationshipStub{stubReader{id: domain.SourceXHS}}
+	mixed := NewMixed(plain, relationships)
+	if _, ok := mixed.RelationshipInteractor(domain.SourceTieba); ok {
+		t.Fatal("plain reader unexpectedly exposes relationships")
+	}
+	if _, ok := mixed.RelationshipInteractor(domain.SourceXHS); !ok {
+		t.Fatal("relationship reader was not exposed")
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/xjz6626/mixsocial/internal/domain"
 	"github.com/xjz6626/mixsocial/internal/source"
@@ -68,6 +69,9 @@ func TestSearchMapsFeedAndAuth(t *testing.T) {
 	if len(page.Items) != 1 || page.Items[0].Stats.Likes != 12000 || page.Items[0].Author.Name != "alice" {
 		t.Fatalf("unexpected page: %+v", page)
 	}
+	if page.Items[0].Author.Ref.Source != domain.SourceXHS || page.Items[0].Author.Ref.ID != "u1" || !strings.Contains(page.Items[0].Author.Ref.URL, "xsec_token=token-1") {
+		t.Fatalf("unexpected author profile ref: %+v", page.Items[0].Author.Ref)
+	}
 }
 
 func TestDetailMapsComments(t *testing.T) {
@@ -88,6 +92,40 @@ func TestDetailMapsComments(t *testing.T) {
 	}
 	if detail.Body != "Body" || len(detail.Comments) != 1 || detail.Comments[0].Body != "nice" {
 		t.Fatalf("unexpected detail: %+v", detail)
+	}
+}
+
+func TestDetailMapsVideoStreamAndFeedCover(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return jsonResponse(t, request, map[string]any{
+			"success": true,
+			"data": map[string]any{"feed_id": "v1", "data": map[string]any{
+				"note": map[string]any{
+					"noteId": "v1", "title": "Video", "type": "video",
+					"video": map[string]any{
+						"capa": map[string]any{"duration": 13},
+						"media": map[string]any{"stream": map[string]any{"h264": []any{
+							map[string]any{"masterUrl": "https://video.example/v1.mp4", "width": 720, "height": 1280, "duration": 12500, "streamDesc": "HD", "defaultStream": 1},
+						}}},
+					},
+				},
+				"comments": map[string]any{"list": []any{}},
+			}},
+		})
+	})}
+	provider := New(Config{Endpoint: "http://xhs.test", Client: client})
+	detail, err := provider.Detail(context.Background(), domain.Ref{Source: domain.SourceXHS, ID: "v1", Token: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Media) != 1 || detail.Media[0].Kind != "video" || detail.Media[0].URL != "https://video.example/v1.mp4" || detail.Media[0].Duration != 12500*time.Millisecond {
+		t.Fatalf("unexpected video media: %+v", detail.Media)
+	}
+	feedItem := mapFeed(feed{ID: "v1", ModelType: "note", NoteCard: noteCard{
+		Type: "video", Cover: cover{URLDefault: "https://img.example/v1.jpg"}, Video: &video{Capa: videoCapability{Duration: 13}},
+	}})
+	if len(feedItem.Media) != 1 || feedItem.Media[0].Kind != "video" || feedItem.Media[0].PreviewURL == "" || feedItem.Media[0].Duration != 13*time.Second {
+		t.Fatalf("unexpected video cover: %+v", feedItem.Media)
 	}
 }
 

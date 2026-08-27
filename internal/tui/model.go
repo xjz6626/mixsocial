@@ -10,6 +10,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/makiuchi-d/gozxing"
 	zxingqrcode "github.com/makiuchi-d/gozxing/qrcode"
 	qrcode "github.com/skip2/go-qrcode"
+	_ "golang.org/x/image/webp"
 
 	"github.com/xjz6626/mixsocial/internal/domain"
 	"github.com/xjz6626/mixsocial/internal/source"
@@ -80,8 +82,44 @@ type pageMsg struct {
 }
 
 type detailMsg struct {
-	detail domain.Detail
-	err    error
+	detail     domain.Detail
+	item       domain.Item
+	generation int
+	prefetched bool
+	err        error
+}
+
+type prefetchDetailMsg struct {
+	generation int
+	item       domain.Item
+	detail     domain.Detail
+	err        error
+}
+
+type mediaPrefetchTask struct {
+	generation int
+	ref        domain.Ref
+	url        string
+	referer    string
+	spec       nativePreviewSpec
+}
+
+type prefetchMediaMsg struct {
+	task mediaPrefetchTask
+	err  error
+}
+
+type mediaLoadedMsg struct {
+	ref   domain.Ref
+	url   string
+	image image.Image
+	err   error
+}
+
+type mediaPreview struct {
+	image   image.Image
+	error   string
+	loading bool
 }
 
 type actionMsg struct {
@@ -133,6 +171,29 @@ type Model struct {
 	commentSelected int
 	viewport        viewport.Model
 	viewportReady   bool
+	mediaPreviews   map[string]mediaPreview
+	mediaLoading    int
+	mediaFailed     int
+	mediaCache      *mediaCache
+	imageConfig     terminalImageConfig
+
+	detailCache          map[string]domain.Detail
+	detailLoader         *detailLoader
+	prefetchGeneration   int
+	detailPrefetchQueue  []domain.Item
+	detailPrefetchQueued map[string]bool
+	detailPrefetching    map[string]bool
+	detailPrefetchActive int
+	detailPrefetchTotal  int
+	detailPrefetchDone   int
+	detailPrefetchFailed int
+	mediaPrefetchQueue   []mediaPrefetchTask
+	mediaPrefetchKnown   map[string]bool
+	mediaPrefetchActive  int
+	mediaPrefetchTotal   int
+	mediaPrefetchDone    int
+	mediaPrefetchFailed  int
+	pageStatus           string
 
 	loginImage     []byte
 	loginExpiresAt time.Time
@@ -153,13 +214,44 @@ func New(mixed *source.Mixed, timeout time.Duration) Model {
 
 	model := Model{
 		mixed: mixed, timeout: timeout, input: input, status: "正在加载推荐频道…",
-		channels: []source.Channel{source.ChannelRecommend, source.ChannelHot, source.ChannelFollowing},
+		channels:             []source.Channel{source.ChannelRecommend, source.ChannelHot, source.ChannelFollowing},
+		mediaPreviews:        make(map[string]mediaPreview),
+		mediaCache:           newMediaCache(),
+		imageConfig:          detectTerminalImageConfig(os.Getenv),
+		detailCache:          make(map[string]domain.Detail),
+		detailLoader:         newDetailLoader(),
+		detailPrefetchQueued: make(map[string]bool),
+		detailPrefetching:    make(map[string]bool),
+		mediaPrefetchKnown:   make(map[string]bool),
 	}
 	model.filters = append(model.filters, "")
 	for _, reader := range mixed.Sources() {
 		model.filters = append(model.filters, reader.ID())
 	}
 	return model
+}
+
+// SetImageProtocol applies an explicit image protocol while retaining any
+// tmux/Screen passthrough detected from the process environment. An empty or
+// "auto" value restores automatic detection.
+func (m *Model) SetImageProtocol(value string) error {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" || value == "auto" {
+		m.imageConfig = detectTerminalImageConfig(os.Getenv)
+		return nil
+	}
+	switch value {
+	case "kitty", "iterm", "iterm2", "sixel", "ansi", "blocks", "none", "off":
+	default:
+		return fmt.Errorf("不支持的图片协议 %q（可选 auto、kitty、iterm2、sixel、blocks）", value)
+	}
+	m.imageConfig = detectTerminalImageConfig(func(key string) string {
+		if key == "MIXSOCIAL_IMAGE_PROTOCOL" {
+			return value
+		}
+		return os.Getenv(key)
+	})
+	return nil
 }
 
 func (m Model) Init() tea.Cmd {
@@ -170,6 +262,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.resize(msg.Width, msg.Height)
+		if m.mode == detailView && m.detail != nil {
+			commands := m.prepareMediaLoads()
+			m.mediaLoading += len(commands)
+			return m, tea.Batch(commands...)
+		}
 		return m, nil
 	case pageMsg:
 		m.busy = false
@@ -186,12 +283,15 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.status = fmt.Sprintf("%s · %d 条", m.currentChannel().Label(), len(m.items))
 		}
+		m.pageStatus = m.status
 		if m.loginAfterBusy {
+			m.beginPagePrefetch(nil)
 			m.loginAfterBusy = false
 			m.reloadAfterBusy = false
 			return m.startLogin()
 		}
 		if m.reloadAfterBusy {
+			m.beginPagePrefetch(nil)
 			m.reloadAfterBusy = false
 			m.busy = true
 			m.status = "正在加载来源：" + m.selectedSourceLabel()
@@ -200,17 +300,93 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.feedCmd()
 		}
-		return m, nil
+		var commands []tea.Cmd
+		if msg.err == nil {
+			commands = m.beginPagePrefetch(m.items)
+		} else {
+			m.beginPagePrefetch(nil)
+		}
+		m.updatePrefetchStatus()
+		return m, tea.Batch(commands...)
 	case detailMsg:
 		m.busy = false
 		if msg.err != nil {
 			m.status = msg.err.Error()
+			if msg.prefetched && msg.generation == m.prefetchGeneration {
+				m.detailPrefetchDone++
+				m.detailPrefetchFailed++
+				commands := m.startDetailPrefetches()
+				return m, tea.Batch(commands...)
+			}
 			return m, nil
 		}
-		m.detail = &msg.detail
-		m.mode = detailView
-		m.commentSelected = 0
-		m.status = "详情已载入"
+		item := msg.item
+		if item.Ref.ID == "" {
+			item, _ = m.currentItem()
+		}
+		m.detailCache[refCacheKey(item.Ref)] = msg.detail
+		if msg.prefetched && msg.generation == m.prefetchGeneration {
+			m.detailPrefetchDone++
+			m.enqueueDetailMedia(msg.detail)
+		}
+		commands := m.openDetail(msg.detail, item)
+		commands = append(commands, m.startDetailPrefetches()...)
+		commands = append(commands, m.startMediaPrefetches()...)
+		return m, tea.Batch(commands...)
+	case prefetchDetailMsg:
+		if msg.generation != m.prefetchGeneration {
+			return m, nil
+		}
+		m.detailPrefetchActive = max(0, m.detailPrefetchActive-1)
+		key := refCacheKey(msg.item.Ref)
+		delete(m.detailPrefetching, key)
+		m.detailPrefetchDone++
+		var commands []tea.Cmd
+		if msg.err != nil {
+			m.detailPrefetchFailed++
+		} else {
+			m.detailCache[key] = msg.detail
+			m.enqueueDetailMedia(msg.detail)
+			commands = append(commands, m.startMediaPrefetches()...)
+		}
+		commands = append(commands, m.startDetailPrefetches()...)
+		m.updatePrefetchStatus()
+		return m, tea.Batch(commands...)
+	case prefetchMediaMsg:
+		if msg.task.generation != m.prefetchGeneration {
+			return m, nil
+		}
+		m.mediaPrefetchActive = max(0, m.mediaPrefetchActive-1)
+		m.mediaPrefetchDone++
+		if msg.err != nil {
+			m.mediaPrefetchFailed++
+		}
+		commands := m.startMediaPrefetches()
+		if m.mode == detailView && m.detail != nil && refCacheKey(m.detail.Ref) == refCacheKey(msg.task.ref) {
+			m.syncDetail()
+		}
+		m.updatePrefetchStatus()
+		return m, tea.Batch(commands...)
+	case mediaLoadedMsg:
+		if m.mode != detailView || m.detail == nil || msg.ref.Source != m.detail.Ref.Source || msg.ref.ID != m.detail.Ref.ID {
+			return m, nil
+		}
+		preview := mediaPreview{image: msg.image}
+		if msg.err != nil {
+			preview.error = msg.err.Error()
+			m.mediaFailed++
+		}
+		m.mediaPreviews[msg.url] = preview
+		m.mediaLoading = max(0, m.mediaLoading-1)
+		if m.mediaLoading == 0 {
+			if m.mediaFailed > 0 {
+				m.status = fmt.Sprintf("详情已载入，%d 项媒体预览失败", m.mediaFailed)
+			} else {
+				m.status = "详情和媒体已载入"
+			}
+		} else {
+			m.status = fmt.Sprintf("正在加载媒体，剩余 %d 项…", m.mediaLoading)
+		}
 		m.syncDetail()
 		return m, nil
 	case actionMsg:
@@ -270,6 +446,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.status += ": " + msg.status.Username
 			}
 			m.busy = true
+			m.beginPagePrefetch(nil)
 			return m, m.feedCmd()
 		}
 		m.status = "等待扫码确认…"
@@ -284,6 +461,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.status.Username != "" {
 			m.status += ": " + msg.status.Username
 		}
+		m.beginPagePrefetch(nil)
 		return m, m.feedCmd()
 	case tea.KeyMsg:
 		if m.pending != nil {
@@ -332,6 +510,7 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = listView
 			m.busy = true
 			m.status = "正在搜索…"
+			m.beginPagePrefetch(nil)
 			return m, m.searchCmd(value)
 		case inputComment:
 			action := pendingAction{kind: actionComment, ref: m.currentRef(), body: value}
@@ -400,6 +579,7 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc", "b", "backspace":
 			m.mode = listView
 			m.status = "返回信息流"
+			m.updatePrefetchStatus()
 			return m, nil
 		case "j", "down":
 			m.viewport.LineDown(1)
@@ -440,6 +620,7 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selected = 0
 			m.busy = true
 			m.status = "正在切换到" + m.currentChannel().Label() + "…"
+			m.beginPagePrefetch(nil)
 			return m, m.feedCmd()
 		}
 	case "/":
@@ -448,6 +629,7 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.filterIndex = (m.filterIndex + 1) % len(m.filters)
 		m.busy = true
 		m.status = "正在切换到来源：" + m.selectedSourceLabel()
+		m.beginPagePrefetch(nil)
 		if m.query != "" {
 			return m, m.searchCmd(m.query)
 		}
@@ -456,6 +638,7 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.filterIndex = (m.filterIndex - 1 + len(m.filters)) % len(m.filters)
 		m.busy = true
 		m.status = "正在切换到来源：" + m.selectedSourceLabel()
+		m.beginPagePrefetch(nil)
 		if m.query != "" {
 			return m, m.searchCmd(m.query)
 		}
@@ -463,6 +646,7 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		m.busy = true
 		m.status = "正在刷新…"
+		m.beginPagePrefetch(nil)
 		if m.query != "" {
 			return m, m.searchCmd(m.query)
 		}
@@ -476,10 +660,25 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "G", "end":
 		m.selected = max(0, len(m.items)-1)
 	case "enter":
-		if len(m.items) > 0 {
+		if item, ok := m.currentItem(); ok {
+			key := refCacheKey(item.Ref)
+			if detail, cached := m.detailCache[key]; cached {
+				commands := m.openDetail(detail, item)
+				if len(commands) == 0 {
+					m.status = "已从缓存打开详情和媒体"
+				}
+				return m, tea.Batch(commands...)
+			}
 			m.busy = true
+			if m.detailPrefetching[key] {
+				m.status = "正在打开后台缓存中的详情…"
+				return m, m.detailCmd(item, false)
+			}
+			prefetched := m.removeQueuedDetail(key)
 			m.status = "正在读取详情…"
-			return m, m.detailCmd(m.items[m.selected].Ref)
+			commands := []tea.Cmd{m.detailCmd(item, prefetched)}
+			commands = append(commands, m.startDetailPrefetches()...)
+			return m, tea.Batch(commands...)
 		}
 	case "l":
 		if item, ok := m.currentItem(); ok {
@@ -522,6 +721,9 @@ func (m Model) View() string {
 	}
 	top := header + "  " + strings.Join(channels, "  ") + "    来源 " + strings.Join(filters, "  ")
 	top = lipgloss.NewStyle().Width(width).Padding(0, 1).Render(top)
+	if m.mode == detailView {
+		top = m.kittyImagePreamble() + top
+	}
 
 	var content string
 	if m.mode == loginView {
@@ -551,6 +753,7 @@ func (m Model) View() string {
 	} else if m.mode == loginView {
 		help = "使用" + loginAppName(m.loginSource) + "扫码  L/r 刷新二维码  b/esc 返回  q 退出"
 	}
+	help = singleLine("图片 "+m.imageConfig.statusLabel()+"  ·  "+help, max(20, width-4))
 	footer := lipgloss.NewStyle().BorderTop(true).BorderForeground(borderColor).Width(max(20, width-2)).Padding(0, 1).Render(status + "\n" + lipgloss.NewStyle().Foreground(mutedColor).Render(help))
 	return top + "\n" + content + "\n" + footer
 }
@@ -565,7 +768,9 @@ func (m Model) renderList() string {
 		}
 		return lipgloss.NewStyle().Width(width).Height(available).Padding(1, 2).Foreground(mutedColor).Render(message)
 	}
-	rows := max(1, available/3)
+	// Each topic uses two content lines plus a blank separator. Keeping the
+	// separator in the row budget prevents dense lists from visually merging.
+	rows := max(1, available/4)
 	start := 0
 	if m.selected >= rows {
 		start = m.selected - rows + 1
@@ -589,13 +794,16 @@ func (m Model) renderList() string {
 		if stats != "" {
 			meta += "  " + stats
 		}
+		if media := mediaSummary(item.Media); media != "" {
+			meta += "  " + media
+		}
 		block := marker + truncate(title, max(12, width-6)) + "\n" + "  " + meta
 		blocks = append(blocks, style.Render(block))
 	}
 	if len(m.notices) > 0 && start == 0 {
 		blocks = append([]string{lipgloss.NewStyle().Foreground(mutedColor).Render("提示: " + singleLine(strings.Join(m.notices, " · "), width))}, blocks...)
 	}
-	return lipgloss.NewStyle().Width(width).Height(available).Padding(0, 1).Render(strings.Join(blocks, "\n"))
+	return lipgloss.NewStyle().Width(width).Height(available).Padding(0, 1).Render(strings.Join(blocks, "\n\n"))
 }
 
 func (m Model) renderLogin() string {
@@ -649,6 +857,26 @@ func (m *Model) resize(width, height int) {
 	m.syncDetail()
 }
 
+func (m *Model) openDetail(detail domain.Detail, item domain.Item) []tea.Cmd {
+	m.detailCache[refCacheKey(item.Ref)] = detail
+	m.detail = &detail
+	m.mode = detailView
+	m.commentSelected = 0
+	m.mediaPreviews = make(map[string]mediaPreview)
+	m.viewport.SetYOffset(0)
+	commands := m.prepareMediaLoads()
+	m.mediaLoading = len(commands)
+	m.mediaFailed = 0
+	m.status = "详情已载入"
+	if m.mediaLoading > 0 {
+		m.status = fmt.Sprintf("详情已载入，正在加载 %d 项媒体…", m.mediaLoading)
+	} else if len(detail.Media) > 0 {
+		m.status = "详情和媒体已从缓存载入"
+	}
+	m.syncDetail()
+	return commands
+}
+
 func (m *Model) syncDetail() {
 	if !m.viewportReady || m.detail == nil {
 		return
@@ -663,7 +891,10 @@ func (m *Model) syncDetail() {
 		blocks = append(blocks, lipgloss.NewStyle().Foreground(textColor).Width(width).Render(detail.Body))
 	}
 	if len(detail.Media) > 0 {
-		blocks = append(blocks, lipgloss.NewStyle().Foreground(mutedColor).Render(fmt.Sprintf("媒体 %d 项 · %s", len(detail.Media), detail.Media[0].URL)))
+		blocks = append(blocks, lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf("媒体 %d 项", len(detail.Media))))
+		for index, media := range detail.Media {
+			blocks = append(blocks, m.renderMedia(media, index, width))
+		}
 	}
 	if detail.Ref.URL != "" {
 		blocks = append(blocks, lipgloss.NewStyle().Foreground(mutedColor).Render("原文: "+detail.Ref.URL))
@@ -679,6 +910,9 @@ func (m *Model) syncDetail() {
 		line := marker + fallback(comment.Author.Name, "匿名") + " · " + formatTime(comment.PublishedAt) + "\n  " + comment.Body
 		if len(comment.Replies) > 0 {
 			line += fmt.Sprintf("\n  ↳ %d 条回复", len(comment.Replies))
+		}
+		for mediaIndex, media := range comment.Media {
+			line += "\n" + m.renderMedia(media, mediaIndex, max(20, width-3))
 		}
 		blocks = append(blocks, style.Render(line))
 	}
@@ -708,12 +942,19 @@ func (m Model) searchCmd(query string) tea.Cmd {
 	}
 }
 
-func (m Model) detailCmd(ref domain.Ref) tea.Cmd {
+func (m Model) detailCmd(item domain.Item, prefetched bool) tea.Cmd {
+	generation := m.prefetchGeneration
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), m.timeout)
 		defer cancel()
-		detail, err := m.mixed.Detail(ctx, ref)
-		return detailMsg{detail: detail, err: err}
+		detail, err := m.detailLoader.load(ctx, generation, refCacheKey(item.Ref), func() (domain.Detail, error) {
+			loaded, loadErr := m.mixed.Detail(ctx, item.Ref)
+			if loadErr == nil {
+				mergeListMedia(&loaded, item)
+			}
+			return loaded, loadErr
+		})
+		return detailMsg{detail: detail, item: item, generation: generation, prefetched: prefetched, err: err}
 	}
 }
 
@@ -916,6 +1157,18 @@ func (m *Model) applyAction(action pendingAction) {
 		if action.kind == actionFavorite {
 			m.detail.Favorited = action.value
 		}
+	}
+	for key, detail := range m.detailCache {
+		if detail.Ref.Source != action.ref.Source || detail.Ref.ID != action.ref.ID {
+			continue
+		}
+		if action.kind == actionLike {
+			detail.Liked = action.value
+		}
+		if action.kind == actionFavorite {
+			detail.Favorited = action.value
+		}
+		m.detailCache[key] = detail
 	}
 }
 

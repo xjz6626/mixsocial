@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -84,6 +85,9 @@ func TestSearchRequestAndResponse(t *testing.T) {
 	if len(page.Items) != 1 || page.Items[0].Title != "A thread" || page.Items[0].Summary != "hello from protobuf" || page.Items[0].Author.Name != "tester" {
 		t.Fatalf("unexpected page: %+v", page)
 	}
+	if page.Items[0].Author.Ref.Source != "tieba" || page.Items[0].Author.Ref.ID != "42" || page.Items[0].Author.Ref.URL == "" {
+		t.Fatalf("unexpected author profile ref: %+v", page.Items[0].Author.Ref)
+	}
 	if !page.HasMore || page.NextCursor != "3" {
 		t.Fatalf("unexpected cursor: %+v", page)
 	}
@@ -92,5 +96,27 @@ func TestSearchRequestAndResponse(t *testing.T) {
 func TestParseFieldsRejectsTruncation(t *testing.T) {
 	if _, err := parseFields([]byte{0x0a, 0x05, 0x01}); err == nil {
 		t.Fatal("expected truncation error")
+	}
+}
+
+func TestDecodeContentsMapsImagesAndVideo(t *testing.T) {
+	imageContent := appendUint(nil, 1, 3)
+	imageContent = appendString(imageContent, 2, "with image")
+	imageContent = appendString(imageContent, 25, "https://img.example/original.jpg")
+	imageContent = appendUint(imageContent, 18, 640)
+	imageContent = appendUint(imageContent, 19, 480)
+	videoContent := appendUint(nil, 1, 5)
+	videoContent = appendString(videoContent, 3, "https://video.example/clip.mp4")
+	videoContent = appendString(videoContent, 4, "https://img.example/cover.jpg")
+	videoContent = appendUint(videoContent, 13, 9)
+	videoContent = appendUint(videoContent, 18, 720)
+	videoContent = appendUint(videoContent, 19, 1280)
+
+	text, media := decodeContents([][]byte{imageContent, videoContent})
+	if text != "with image" || len(media) != 2 {
+		t.Fatalf("unexpected decoded contents: text=%q media=%+v", text, media)
+	}
+	if media[0].Kind != "image" || media[0].PreviewURL == "" || media[1].Kind != "video" || media[1].PreviewURL == "" || media[1].Duration != 9*time.Second {
+		t.Fatalf("unexpected media mapping: %+v", media)
 	}
 }

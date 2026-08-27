@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"image"
+	"image/color"
 	"image/png"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +24,12 @@ import (
 type authDemo struct {
 	*demo.Provider
 	image []byte
+}
+
+type mediaRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f mediaRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }
 
 type credentialDemo struct {
@@ -276,5 +285,75 @@ func TestChannelKeys(t *testing.T) {
 	model = updated.(Model)
 	if len(model.items) == 0 || !strings.Contains(strings.Join(model.notices, " "), "热榜") {
 		t.Fatalf("hot channel did not load: %+v", model)
+	}
+}
+
+func TestRenderListLeavesBlankLineBetweenTopics(t *testing.T) {
+	model := New(source.NewMixed(demo.New()), time.Second)
+	model.items = []domain.Item{
+		{Ref: domain.Ref{Source: domain.SourceTieba, ID: "1"}, Title: "first"},
+		{Ref: domain.Ref{Source: domain.SourceXHS, ID: "2"}, Title: "second"},
+	}
+	model.width, model.height = 80, 30
+	rendered := model.renderList()
+	first := strings.Index(rendered, "first")
+	second := strings.Index(rendered, "second")
+	hasBlankLine := false
+	between := ""
+	if first >= 0 && second > first {
+		between = rendered[first:second]
+		for _, line := range strings.Split(between, "\n") {
+			if strings.TrimSpace(line) == "" {
+				hasBlankLine = true
+				break
+			}
+		}
+	}
+	if !hasBlankLine {
+		t.Fatalf("topics do not have a blank separator: %q", between)
+	}
+}
+
+func TestDownloadAndRenderMediaPreview(t *testing.T) {
+	img := image.NewNRGBA(image.Rect(0, 0, 8, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 8; x++ {
+			img.Set(x, y, color.NRGBA{R: uint8(x * 24), G: uint8(y * 50), B: 90, A: 255})
+		}
+	}
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, img); err != nil {
+		t.Fatal(err)
+	}
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: mediaRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Header.Get("Accept") == "" || request.Header.Get("User-Agent") == "" {
+			t.Error("media request is missing headers")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"image/png"}},
+			Body:       io.NopCloser(bytes.NewReader(encoded.Bytes())),
+			Request:    request,
+		}, nil
+	})}
+	defer func() { http.DefaultClient = oldClient }()
+
+	loaded, err := downloadImage(context.Background(), "https://img.example/preview.png", "https://example.test/note")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered := renderTerminalImage(loaded, 8, 2)
+	if !strings.Contains(rendered, "\x1b[38;2;") || strings.Count(rendered, "\n")+1 > 2 {
+		t.Fatalf("unexpected terminal preview: %q", rendered)
+	}
+}
+
+func TestMergeListMediaAddsVideoCoverToDetailStream(t *testing.T) {
+	detail := domain.Detail{Item: domain.Item{Media: []domain.Media{{Kind: "video", URL: "https://video.example/stream.mp4"}}}}
+	listItem := domain.Item{Media: []domain.Media{{Kind: "video", PreviewURL: "https://img.example/cover.webp", Duration: 9 * time.Second}}}
+	mergeListMedia(&detail, listItem)
+	if len(detail.Media) != 1 || detail.Media[0].PreviewURL != "https://img.example/cover.webp" || detail.Media[0].Duration != 9*time.Second {
+		t.Fatalf("video cover was not merged: %+v", detail.Media)
 	}
 }

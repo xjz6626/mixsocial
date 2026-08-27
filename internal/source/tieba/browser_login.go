@@ -1,3 +1,5 @@
+//go:build !android && !ios
+
 package tieba
 
 import (
@@ -20,6 +22,8 @@ import (
 )
 
 const baiduLoginURL = "https://passport.baidu.com/v2/?login"
+
+func browserLoginCapability() source.Capability { return source.CapabilityQRCodeLogin }
 
 type browserLoginSession struct {
 	launcher *launcher.Launcher

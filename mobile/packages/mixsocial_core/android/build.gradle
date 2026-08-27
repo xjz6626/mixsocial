@@ -1,0 +1,34 @@
+group = 'com.xjz.mixsocial.core'
+version = '0.1.0'
+
+apply plugin: 'com.android.library'
+
+android {
+    namespace 'com.xjz.mixsocial.core'
+    compileSdk 37
+
+    defaultConfig {
+        minSdk 24
+    }
+
+    sourceSets {
+        main.java.srcDirs += 'src/main/kotlin'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}
+
+dependencies {
+    // The host app packages the Go AAR. Keeping it compile-only here avoids
+    // producing a broken nested AAR, which AGP 9 rejects explicitly.
+    compileOnly files('libs/mobilecore.aar')
+}
