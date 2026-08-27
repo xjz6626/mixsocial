@@ -37,8 +37,9 @@ x86_64，生成物不提交到 Git。APK 输出到 `mobile/build/app/outputs/flu
 ## GitHub Actions 发布
 
 `.github/workflows/android-release.yml` 在推送 `v*` 标签时构建并发布 Android APK，
-也可以从 Actions 页面手动选择已有标签。工作流会校验标签与 `pubspec.yaml` 版本、
-运行 Go/Flutter 检查、生成 AAR、验证 APK 签名，并同时上传 SHA-256 文件。
+也可以从 Actions 页面手动选择已有标签，或更新 `.github/release-request.json` 后通过
+标准 Git 推送启动已有标签。工作流会校验标签与 `pubspec.yaml` 版本、运行 Go/Flutter
+检查、生成 AAR、验证 APK 签名，并同时上传 SHA-256 文件。
 
 正式标签自动发布前，需要在仓库 Actions Secrets 中配置以下四项，凭据不会进入
 源码、普通数据库或构建日志：
