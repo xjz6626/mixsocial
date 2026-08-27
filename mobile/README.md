@@ -16,8 +16,10 @@
 ```bash
 go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20250911085028-6912353760cf
 go install golang.org/x/mobile/cmd/gobind@v0.0.0-20250911085028-6912353760cf
-gomobile init
 ```
+
+不要额外执行 `gomobile init`；当前版本会尝试拉取不受 `go.mod` 固定的
+`gobind@latest`，可能引入更高的 Go 版本要求。
 
 ## 构建与检查
 
