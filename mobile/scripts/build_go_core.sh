@@ -6,6 +6,11 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_dir="$(cd -- "$script_dir/../.." && pwd -P)"
 output="$repo_dir/mobile/packages/mixsocial_core/android/libs/mobilecore.aar"
 
+if [[ -z "${ANDROID_HOME:-}" && -z "${ANDROID_SDK_ROOT:-}" && -d /opt/android-sdk ]]; then
+	export ANDROID_HOME=/opt/android-sdk
+	export ANDROID_SDK_ROOT=/opt/android-sdk
+fi
+
 if ! command -v gomobile >/dev/null 2>&1; then
 	printf '%s\n' 'gomobile is required. Install the version pinned by go.mod: go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20250911085028-6912353760cf' >&2
 	exit 1

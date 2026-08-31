@@ -13,7 +13,7 @@ on:
       tag:
         description: Existing tag to build and publish
         required: true
-        default: v0.1.0
+        default: v0.2.0
         type: string
       allow_debug_signing:
         description: Allow a debug-signed pre-release when signing secrets are unavailable
@@ -30,7 +30,7 @@ concurrency:
 
 env:
   FLUTTER_VERSION: 3.47.1
-  ANDROID_PLATFORM_VERSION: "37.0"
+  ANDROID_PLATFORM_VERSION: "37"
   ANDROID_BUILD_TOOLS_VERSION: 36.0.0
   ANDROID_NDK_VERSION: 28.2.13676358
   GOMOBILE_VERSION: v0.0.0-20250911085028-6912353760cf
@@ -268,11 +268,7 @@ jobs:
           source_apk="mobile/build/app/outputs/flutter-apk/app-release.apk"
           mkdir -p dist
           cp "$source_apk" "dist/$APK_NAME"
-          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS_VERSION/apksigner" \
-            verify --verbose "dist/$APK_NAME"
-          unzip -l "dist/$APK_NAME" > "$RUNNER_TEMP/apk-contents.txt"
-          grep -q 'lib/arm64-v8a/libgojni.so' "$RUNNER_TEMP/apk-contents.txt"
-          grep -q 'lib/x86_64/libgojni.so' "$RUNNER_TEMP/apk-contents.txt"
+          ./mobile/scripts/verify_android_apk.sh "dist/$APK_NAME"
           cd dist
           sha256sum "$APK_NAME" > "$APK_NAME.sha256"
 

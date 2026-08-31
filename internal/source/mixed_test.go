@@ -17,7 +17,6 @@ type stubReader struct {
 type relationshipStub struct{ stubReader }
 
 func (relationshipStub) Follow(context.Context, domain.ProfileRef, bool) error { return nil }
-func (relationshipStub) Block(context.Context, domain.ProfileRef, bool) error  { return nil }
 
 func (s stubReader) ID() domain.SourceID      { return s.id }
 func (s stubReader) Name() string             { return string(s.id) }

@@ -22,7 +22,6 @@ const (
 	CapabilityCredentialLogin
 	CapabilityQRCodeLogin
 	CapabilityFollow
-	CapabilityBlock
 )
 
 func (c Capability) Has(want Capability) bool { return c&want != 0 }
@@ -74,13 +73,9 @@ type Interactor interface {
 	Reply(ctx context.Context, ref domain.Ref, comment domain.Ref, body string) error
 }
 
-// RelationshipInteractor changes the relationship with an account. Follow
-// and Block are kept separate from content interactions because sources may
-// support one without the other, or implement them through a mobile WebView
-// while content reading remains a native HTTP adapter.
+// RelationshipInteractor changes the follow relationship with an account.
 type RelationshipInteractor interface {
 	Follow(ctx context.Context, profile domain.ProfileRef, value bool) error
-	Block(ctx context.Context, profile domain.ProfileRef, value bool) error
 }
 
 type LoginStatus struct {

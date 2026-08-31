@@ -125,6 +125,35 @@ func TestFollowingAndHotChannels(t *testing.T) {
 	}
 }
 
+func TestFollowingForumsReadsEveryPage(t *testing.T) {
+	var pages []string
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		values, err := url.ParseQuery(string(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		page := values.Get("page_no")
+		pages = append(pages, page)
+		if page == "1" {
+			return jsonHTTPResponse(request, `{"error_code":"0","like_forum":[{"forum_name":"golang"}],"like_forum_has_more":1}`), nil
+		}
+		return jsonHTTPResponse(request, `{"error_code":"0","like_forum":[{"forum_name":"linux"}],"like_forum_has_more":0}`), nil
+	})}
+	provider := New(Config{Client: client, FollowURL: "https://tieba.test/follow"})
+	provider.session = sessionData{BDUSS: strings.Repeat("b", 192), TBS: "tbs", UserID: "1"}
+	forums, err := provider.FollowingForums(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(pages, ",") != "1,2" || strings.Join(forums, ",") != "golang,linux" {
+		t.Fatalf("pages=%v forums=%v", pages, forums)
+	}
+}
+
 func jsonHTTPResponse(request *http.Request, body string) *http.Response {
 	return &http.Response{
 		StatusCode: http.StatusOK,

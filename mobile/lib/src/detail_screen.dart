@@ -1,12 +1,16 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:webview_flutter/webview_flutter.dart';
+import 'package:video_player/video_player.dart';
 
 import 'app_controller.dart';
+import 'design_system.dart';
 import 'feed_widgets.dart';
+import 'forum_screen.dart';
 import 'models.dart';
+import 'network_media.dart';
+import 'profile_screen.dart';
+import 'social_text.dart';
 
 class DetailScreen extends StatefulWidget {
   const DetailScreen({
@@ -23,20 +27,28 @@ class DetailScreen extends StatefulWidget {
 }
 
 class _DetailScreenState extends State<DetailScreen> {
-  late FeedItem _item = widget.initialItem;
+  late FeedItem _item = widget.initialItem.copyWith(
+    favorited:
+        widget.initialItem.favorited ||
+        widget.controller.isSaved(widget.initialItem),
+  );
   FeedDetail? _detail;
+  final ScrollController _scrollController = ScrollController();
+  List<FeedComment> _comments = const <FeedComment>[];
   Object? _error;
   bool _loading = true;
+  bool _loadingMore = false;
   bool _working = false;
+  bool _reverse = false;
+  bool _onlyOriginalPoster = false;
+  bool _hasMore = false;
+  String _nextCursor = '';
   late bool _following =
       widget.controller.isFollowing(_item.author.ref) || _item.author.following;
-  late bool _blocked =
-      widget.controller.isBlocked(_item.author.ref) || _item.author.blocked;
 
   bool get _canLike =>
       widget.controller.supports(_item.ref.source, SourceCapability.like);
-  bool get _canFavorite =>
-      widget.controller.supports(_item.ref.source, SourceCapability.favorite);
+  bool get _canFavorite => true;
   bool get _canComment =>
       widget.controller.supports(_item.ref.source, SourceCapability.comment);
   bool get _canReply =>
@@ -47,7 +59,21 @@ class _DetailScreenState extends State<DetailScreen> {
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_loadMoreNearEnd);
     unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _loadMoreNearEnd() {
+    if (_scrollController.hasClients &&
+        _scrollController.position.extentAfter < 520) {
+      unawaited(_loadMore());
+    }
   }
 
   Future<void> _load() async {
@@ -58,23 +84,82 @@ class _DetailScreenState extends State<DetailScreen> {
       });
     }
     try {
-      final detail = await widget.controller.detail(_item.ref);
+      final detail = await widget.controller.detailPage(
+        _item.ref,
+        reverse: _reverse,
+        onlyOriginalPoster: _onlyOriginalPoster,
+      );
       if (!mounted) return;
       setState(() {
         _detail = detail;
-        _item = detail.item;
+        _item = _resolvedItem(detail.item);
+        _comments = widget.controller.prepareComments(detail.comments);
+        _hasMore = detail.hasMore;
+        _nextCursor = detail.nextCursor;
         _following =
             widget.controller.isFollowing(_item.author.ref) ||
             _item.author.following;
-        _blocked =
-            widget.controller.isBlocked(_item.author.ref) ||
-            _item.author.blocked;
       });
     } catch (error) {
       if (mounted) setState(() => _error = error);
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  Future<void> _loadMore() async {
+    if (_loading || _loadingMore || !_hasMore || _nextCursor.isEmpty) return;
+    setState(() => _loadingMore = true);
+    try {
+      final page = await widget.controller.detailPage(
+        _item.ref,
+        cursor: _nextCursor,
+        reverse: _reverse,
+        onlyOriginalPoster: _onlyOriginalPoster,
+      );
+      if (!mounted) return;
+      final seen = _comments.map((FeedComment item) => item.ref.id).toSet();
+      setState(() {
+        _comments = <FeedComment>[
+          ..._comments,
+          ...widget.controller
+              .prepareComments(page.comments)
+              .where(
+                (FeedComment item) =>
+                    item.ref.id.isEmpty || seen.add(item.ref.id),
+              ),
+        ];
+        _hasMore = page.hasMore;
+        _nextCursor = page.nextCursor;
+      });
+    } catch (error) {
+      if (mounted) _showMessage('加载更多回复失败：$error', error: true);
+    } finally {
+      if (mounted) setState(() => _loadingMore = false);
+    }
+  }
+
+  FeedItem _resolvedItem(FeedItem loaded) {
+    var value = loaded.ref.id.isEmpty ? _item : loaded;
+    if (widget.controller.hideMedia && value.media.isNotEmpty) {
+      value = value.copyWith(media: const <MediaItem>[]);
+    }
+    return value.copyWith(
+      favorited: value.favorited || widget.controller.isSaved(value),
+    );
+  }
+
+  Future<void> _setThreadView({bool? reverse, bool? onlyOriginalPoster}) async {
+    setState(() {
+      _reverse = reverse ?? _reverse;
+      _onlyOriginalPoster = onlyOriginalPoster ?? _onlyOriginalPoster;
+      _comments = const <FeedComment>[];
+      _detail = null;
+      _hasMore = false;
+      _nextCursor = '';
+    });
+    if (_scrollController.hasClients) _scrollController.jumpTo(0);
+    await _load();
   }
 
   Future<void> _like() async {
@@ -96,7 +181,7 @@ class _DetailScreenState extends State<DetailScreen> {
   Future<void> _favorite() async {
     final value = !_item.favorited;
     await _runAction(() async {
-      await widget.controller.favorite(_item.ref, value);
+      final warning = await widget.controller.favorite(_item, value);
       if (!mounted) return;
       setState(() {
         _item = _item.copyWith(
@@ -110,6 +195,7 @@ class _DetailScreenState extends State<DetailScreen> {
           ),
         );
       });
+      if (warning != null) _showMessage(warning);
     }, success: value ? '已收藏' : '已取消收藏');
   }
 
@@ -121,14 +207,16 @@ class _DetailScreenState extends State<DetailScreen> {
     }, success: value ? '已关注' : '已取消关注');
   }
 
-  Future<void> _block() async {
-    final value = !_blocked;
-    if (value) {
+  Future<void> _blockForum() async {
+    final forum = _item.forumName;
+    if (forum.isEmpty) return;
+    final blocked = widget.controller.isForumBlocked(forum);
+    if (!blocked) {
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (BuildContext context) => AlertDialog(
-          title: const Text('屏蔽此作者？'),
-          content: Text('屏蔽后，${_item.author.name} 的内容不会再出现在本地信息流中。'),
+          title: Text('屏蔽 $forum吧？'),
+          content: const Text('屏蔽后，这个吧的主题不会再出现在首页、搜索、历史和收藏列表中。'),
           actions: <Widget>[
             TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -143,15 +231,51 @@ class _DetailScreenState extends State<DetailScreen> {
       );
       if (confirmed != true || !mounted) return;
     }
-    await _runAction(
-      () async {
-        final warning = await widget.controller.block(_item.author.ref, value);
-        if (!mounted) return;
-        setState(() => _blocked = value);
-        if (warning != null) _showMessage(warning);
-      },
-      success: value ? '已屏蔽此作者' : '已解除屏蔽',
-      showSuccess: false,
+    await widget.controller.setForumBlocked(forum, !blocked);
+    if (!mounted) return;
+    _showMessage(blocked ? '已解除屏蔽 $forum吧' : '已屏蔽 $forum吧');
+    if (!blocked) Navigator.pop(context);
+  }
+
+  void _openForum() {
+    if (_item.forumName.isEmpty) return;
+    Navigator.push<void>(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            ForumScreen(controller: widget.controller, forum: _item.forumName),
+      ),
+    );
+  }
+
+  void _openProfile() {
+    if (_item.author.ref.source != SourceId.xhs ||
+        _item.author.ref.id.isEmpty) {
+      return;
+    }
+    Navigator.push<void>(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            ProfileScreen(controller: widget.controller, author: _item.author),
+      ),
+    );
+  }
+
+  void _openTopic(String topic) {
+    widget.controller.requestSearchNavigation(SourceId.xhs, topic);
+  }
+
+  void _openFloorReplies(FeedComment comment) {
+    Navigator.push<void>(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => _FloorRepliesScreen(
+          controller: widget.controller,
+          comment: comment,
+          originalPosterId: _item.author.id,
+        ),
+      ),
     );
   }
 
@@ -177,12 +301,7 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Future<void> _reloadAfterInteraction() async {
-    final detail = await widget.controller.detail(_item.ref);
-    if (!mounted) return;
-    setState(() {
-      _detail = detail;
-      _item = detail.item;
-    });
+    await _load();
   }
 
   Future<String?> _compose({
@@ -273,38 +392,66 @@ class _DetailScreenState extends State<DetailScreen> {
   @override
   Widget build(BuildContext context) {
     final detail = _detail;
-    final comments = detail?.comments ?? const <FeedComment>[];
+    final comments = _comments;
+    final tiebaThread = _item.ref.source == SourceId.tieba;
     return Scaffold(
       appBar: AppBar(
         title: Text(_item.ref.source.label),
         actions: <Widget>[
-          PopupMenuButton<String>(
-            enabled: !_working && _item.author.ref.id.isNotEmpty,
-            onSelected: (String action) {
-              if (action == 'block') unawaited(_block());
-            },
-            itemBuilder: (_) => <PopupMenuEntry<String>>[
-              PopupMenuItem<String>(
-                value: 'block',
-                child: Row(
-                  children: <Widget>[
-                    Icon(
-                      _blocked
-                          ? Icons.visibility_outlined
-                          : Icons.block_outlined,
-                    ),
-                    const SizedBox(width: 10),
-                    Text(_blocked ? '解除屏蔽' : '屏蔽作者'),
-                  ],
+          if (tiebaThread)
+            PopupMenuButton<String>(
+              enabled: !_working && !_loading,
+              onSelected: (String action) {
+                switch (action) {
+                  case 'reverse':
+                    unawaited(_setThreadView(reverse: !_reverse));
+                    break;
+                  case 'onlyOriginalPoster':
+                    unawaited(
+                      _setThreadView(onlyOriginalPoster: !_onlyOriginalPoster),
+                    );
+                    break;
+                  case 'blockForum':
+                    unawaited(_blockForum());
+                    break;
+                  case 'openForum':
+                    _openForum();
+                    break;
+                }
+              },
+              itemBuilder: (_) => <PopupMenuEntry<String>>[
+                CheckedPopupMenuItem<String>(
+                  value: 'reverse',
+                  checked: _reverse,
+                  child: const Text('倒序浏览'),
                 ),
-              ),
-            ],
-          ),
+                CheckedPopupMenuItem<String>(
+                  value: 'onlyOriginalPoster',
+                  checked: _onlyOriginalPoster,
+                  child: const Text('只看楼主'),
+                ),
+                if (_item.forumName.isNotEmpty)
+                  PopupMenuItem<String>(
+                    value: 'openForum',
+                    child: Text('进入 ${_item.forumName}吧'),
+                  ),
+                if (_item.forumName.isNotEmpty)
+                  PopupMenuItem<String>(
+                    value: 'blockForum',
+                    child: Text(
+                      widget.controller.isForumBlocked(_item.forumName)
+                          ? '解除屏蔽 ${_item.forumName}吧'
+                          : '屏蔽 ${_item.forumName}吧',
+                    ),
+                  ),
+              ],
+            ),
         ],
       ),
       body: RefreshIndicator(
         onRefresh: _load,
         child: CustomScrollView(
+          controller: _scrollController,
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: <Widget>[
             if (_loading)
@@ -321,6 +468,15 @@ class _DetailScreenState extends State<DetailScreen> {
                 SliverToBoxAdapter(
                   child: _MediaCarousel(
                     item: _item,
+                    onOpenImage: (MediaItem media) => Navigator.push<void>(
+                      context,
+                      MaterialPageRoute<void>(
+                        builder: (_) => _ImageScreen(
+                          source: _item.ref.source,
+                          media: media,
+                        ),
+                      ),
+                    ),
                     onOpenVideo: (MediaItem media) => Navigator.push<void>(
                       context,
                       MaterialPageRoute<void>(
@@ -341,6 +497,9 @@ class _DetailScreenState extends State<DetailScreen> {
                   canFollow: _canFollow,
                   working: _working,
                   onFollow: _follow,
+                  onForumTap: _openForum,
+                  onAuthorTap: _openProfile,
+                  onTopicTap: _openTopic,
                 ),
               ),
               SliverToBoxAdapter(
@@ -357,26 +516,77 @@ class _DetailScreenState extends State<DetailScreen> {
                         '${comments.length}',
                         style: Theme.of(context).textTheme.labelLarge,
                       ),
+                      const Spacer(),
+                      if (_onlyOriginalPoster)
+                        const Chip(
+                          visualDensity: VisualDensity.compact,
+                          label: Text('只看楼主'),
+                        ),
+                      if (_reverse) ...<Widget>[
+                        const SizedBox(width: 6),
+                        const Chip(
+                          visualDensity: VisualDensity.compact,
+                          label: Text('倒序'),
+                        ),
+                      ],
                     ],
                   ),
                 ),
               ),
               if (comments.isEmpty && !_loading)
                 const SliverToBoxAdapter(
-                  child: Padding(
-                    padding: EdgeInsets.fromLTRB(16, 10, 16, 36),
-                    child: Center(child: Text('还没有加载到评论')),
+                  child: AppStateView(
+                    icon: Icons.chat_bubble_outline_rounded,
+                    title: '还没有评论',
+                    message: '这里暂时没有加载到回复，稍后可以下拉刷新再看看。',
+                    compact: true,
                   ),
                 )
               else
                 SliverList.builder(
                   itemCount: comments.length,
-                  itemBuilder: (BuildContext context, int index) =>
-                      _CommentTile(
-                        comment: comments[index],
-                        canReply: _canReply && !_working,
-                        onReply: () => _reply(comments[index]),
+                  itemBuilder: (BuildContext context, int index) {
+                    final comment = comments[index];
+                    return _CommentTile(
+                      comment: comment,
+                      originalPosterId: _item.author.id,
+                      density: widget.controller.density,
+                      canReply: _canReply && !_working,
+                      onReply: () => _reply(comment),
+                      onTopicTap: _item.ref.source == SourceId.xhs
+                          ? _openTopic
+                          : null,
+                      onOpenReplies:
+                          widget.controller.supportsFloorReplies(
+                                _item.ref.source,
+                              ) &&
+                              comment.replyCount > 0
+                          ? () => _openFloorReplies(comment)
+                          : null,
+                    );
+                  },
+                ),
+              if (_loadingMore)
+                const SliverToBoxAdapter(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(vertical: 20),
+                    child: Center(
+                      child: SizedBox.square(
+                        dimension: 24,
+                        child: CircularProgressIndicator(strokeWidth: 2.5),
                       ),
+                    ),
+                  ),
+                )
+              else if (_hasMore)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 6, 16, 18),
+                    child: OutlinedButton(
+                      onPressed: _loadMore,
+                      child: const Text('加载更多回复'),
+                    ),
+                  ),
                 ),
               const SliverToBoxAdapter(child: SizedBox(height: 92)),
             ],
@@ -398,9 +608,14 @@ class _DetailScreenState extends State<DetailScreen> {
 }
 
 class _MediaCarousel extends StatefulWidget {
-  const _MediaCarousel({required this.item, required this.onOpenVideo});
+  const _MediaCarousel({
+    required this.item,
+    required this.onOpenImage,
+    required this.onOpenVideo,
+  });
 
   final FeedItem item;
+  final ValueChanged<MediaItem> onOpenImage;
   final ValueChanged<MediaItem> onOpenVideo;
 
   @override
@@ -427,15 +642,16 @@ class _MediaCarouselState extends State<_MediaCarousel> {
               return Material(
                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 child: InkWell(
-                  onTap: item.kind == 'video'
-                      ? () => widget.onOpenVideo(item)
-                      : null,
+                  onTap: () => item.kind == 'video'
+                      ? widget.onOpenVideo(item)
+                      : widget.onOpenImage(item),
                   child: Stack(
                     fit: StackFit.expand,
                     children: <Widget>[
                       if (imageUrl.isNotEmpty)
-                        Image.network(
-                          imageUrl,
+                        SourceNetworkImage(
+                          url: imageUrl,
+                          source: widget.item.ref.source,
                           fit: BoxFit.contain,
                           errorBuilder: (context, error, stackTrace) =>
                               const _MediaUnavailable(),
@@ -498,6 +714,41 @@ class _MediaUnavailable extends StatelessWidget {
   );
 }
 
+class _ImageScreen extends StatelessWidget {
+  const _ImageScreen({required this.source, required this.media});
+
+  final SourceId source;
+  final MediaItem media;
+
+  @override
+  Widget build(BuildContext context) {
+    final url = media.url.isNotEmpty ? media.url : media.displayUrl;
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        foregroundColor: Colors.white,
+        backgroundColor: Colors.black,
+        title: const Text('查看图片'),
+      ),
+      body: Center(
+        child: url.isEmpty
+            ? const _MediaUnavailable()
+            : InteractiveViewer(
+                minScale: 0.8,
+                maxScale: 5,
+                child: SourceNetworkImage(
+                  url: url,
+                  source: source,
+                  fit: BoxFit.contain,
+                  maxDimension: 4096,
+                  errorBuilder: (_, _, _) => const _MediaUnavailable(),
+                ),
+              ),
+      ),
+    );
+  }
+}
+
 class _DetailHeader extends StatelessWidget {
   const _DetailHeader({
     required this.item,
@@ -506,6 +757,9 @@ class _DetailHeader extends StatelessWidget {
     required this.canFollow,
     required this.working,
     required this.onFollow,
+    required this.onForumTap,
+    required this.onAuthorTap,
+    required this.onTopicTap,
   });
 
   final FeedItem item;
@@ -514,6 +768,9 @@ class _DetailHeader extends StatelessWidget {
   final bool canFollow;
   final bool working;
   final VoidCallback onFollow;
+  final VoidCallback onForumTap;
+  final VoidCallback onAuthorTap;
+  final ValueChanged<String> onTopicTap;
 
   @override
   Widget build(BuildContext context) {
@@ -524,14 +781,27 @@ class _DetailHeader extends StatelessWidget {
         children: <Widget>[
           Row(
             children: <Widget>[
-              AuthorAvatar(author: item.author, radius: 20),
-              const SizedBox(width: 10),
               Expanded(
-                child: Text(
-                  item.author.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleMedium,
+                child: InkWell(
+                  onTap: item.ref.source == SourceId.xhs ? onAuthorTap : null,
+                  borderRadius: BorderRadius.circular(28),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      children: <Widget>[
+                        AuthorAvatar(author: item.author, radius: 20),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            item.author.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
               if (canFollow)
@@ -557,14 +827,28 @@ class _DetailHeader extends StatelessWidget {
             const SizedBox(height: 10),
           ],
           if (body.isNotEmpty)
-            Text(body, style: Theme.of(context).textTheme.bodyLarge),
+            SocialRichText(
+              text: body,
+              source: item.ref.source,
+              style: Theme.of(context).textTheme.bodyLarge,
+              onTopicTap: item.ref.source == SourceId.xhs ? onTopicTap : null,
+            ),
           if (item.tags.isNotEmpty) ...<Widget>[
             const SizedBox(height: 12),
             Wrap(
               spacing: 6,
               runSpacing: 6,
               children: item.tags
-                  .map((String tag) => Chip(label: Text('#$tag')))
+                  .map(
+                    (String tag) => ActionChip(
+                      label: Text('#$tag'),
+                      onPressed: item.ref.source == SourceId.xhs
+                          ? () => onTopicTap(tag)
+                          : item.forumName.isEmpty
+                          ? null
+                          : onForumTap,
+                    ),
+                  )
                   .toList(),
             ),
           ],
@@ -598,18 +882,31 @@ class _DetailHeader extends StatelessWidget {
 class _CommentTile extends StatelessWidget {
   const _CommentTile({
     required this.comment,
+    required this.originalPosterId,
+    required this.density,
     required this.canReply,
     required this.onReply,
+    this.onOpenReplies,
+    this.onTopicTap,
   });
 
   final FeedComment comment;
+  final String originalPosterId;
+  final FeedDensity density;
   final bool canReply;
   final VoidCallback onReply;
+  final VoidCallback? onOpenReplies;
+  final ValueChanged<String>? onTopicTap;
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+      padding: EdgeInsets.fromLTRB(
+        16,
+        density == FeedDensity.compact ? 5 : 8,
+        16,
+        density == FeedDensity.comfortable ? 18 : 12,
+      ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
@@ -619,12 +916,121 @@ class _CommentTile extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                Text(
-                  comment.author.name,
-                  style: Theme.of(context).textTheme.labelLarge,
+                Row(
+                  children: <Widget>[
+                    Flexible(
+                      child: Text(
+                        comment.author.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelLarge,
+                      ),
+                    ),
+                    if (comment.author.id.isNotEmpty &&
+                        comment.author.id == originalPosterId) ...<Widget>[
+                      const SizedBox(width: 6),
+                      const Badge(label: Text('楼主')),
+                    ],
+                    const Spacer(),
+                    Text(
+                      <String>[
+                        if (comment.floor > 0) '${comment.floor}楼',
+                        if (comment.publishedAt != null)
+                          _commentTime(comment.publishedAt!),
+                      ].join(' · '),
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: Theme.of(context).colorScheme.outline,
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 4),
-                Text(comment.body),
+                SocialRichText(
+                  text: comment.body,
+                  source: comment.ref.source,
+                  onTopicTap: onTopicTap,
+                ),
+                if (comment.media.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    height: 92,
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: comment.media.length,
+                      separatorBuilder: (_, _) => const SizedBox(width: 6),
+                      itemBuilder: (BuildContext context, int index) {
+                        final media = comment.media[index];
+                        return ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: SizedBox.square(
+                            dimension: 92,
+                            child: SourceNetworkImage(
+                              url: media.displayUrl,
+                              source: comment.ref.source,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, _, _) => ColoredBox(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.surfaceContainerHighest,
+                                child: const Icon(Icons.broken_image_outlined),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+                if (comment.replies.isNotEmpty ||
+                    onOpenReplies != null) ...<Widget>[
+                  const SizedBox(height: 8),
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(9),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(10),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          for (final reply in comment.replies)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 5),
+                              child: SocialRichText(
+                                text: reply.body,
+                                source: reply.ref.source,
+                                onTopicTap: onTopicTap,
+                                leading: <InlineSpan>[
+                                  TextSpan(
+                                    text: '${reply.author.name}：',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          if (onOpenReplies != null)
+                            TextButton(
+                              onPressed: onOpenReplies,
+                              style: TextButton.styleFrom(
+                                padding: EdgeInsets.zero,
+                                visualDensity: VisualDensity.compact,
+                              ),
+                              child: Text(
+                                comment.replyCount > comment.replies.length
+                                    ? '查看全部 ${comment.replyCount} 条回复'
+                                    : '查看楼中楼',
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 5),
                 Row(
                   children: <Widget>[
@@ -645,6 +1051,193 @@ class _CommentTile extends StatelessWidget {
       ),
     );
   }
+}
+
+class _FloorRepliesScreen extends StatefulWidget {
+  const _FloorRepliesScreen({
+    required this.controller,
+    required this.comment,
+    required this.originalPosterId,
+  });
+
+  final MixsocialController controller;
+  final FeedComment comment;
+  final String originalPosterId;
+
+  @override
+  State<_FloorRepliesScreen> createState() => _FloorRepliesScreenState();
+}
+
+class _FloorRepliesScreenState extends State<_FloorRepliesScreen> {
+  final ScrollController _scrollController = ScrollController();
+  late List<FeedComment> _replies = widget.controller.prepareComments(
+    widget.comment.replies,
+  );
+  String _nextCursor = '';
+  Object? _error;
+  bool _hasMore = false;
+  bool _loading = true;
+  bool _loadingMore = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController.addListener(() {
+      if (_scrollController.position.extentAfter < 420) unawaited(_loadMore());
+    });
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final page = await widget.controller.floorReplies(widget.comment.ref);
+      if (!mounted) return;
+      setState(() {
+        _replies = widget.controller.prepareComments(page.comments);
+        _nextCursor = page.nextCursor;
+        _hasMore = page.hasMore;
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loadMore() async {
+    if (_loading || _loadingMore || !_hasMore || _nextCursor.isEmpty) return;
+    setState(() => _loadingMore = true);
+    try {
+      final page = await widget.controller.floorReplies(
+        widget.comment.ref,
+        cursor: _nextCursor,
+      );
+      if (!mounted) return;
+      final seen = _replies.map((FeedComment item) => item.ref.id).toSet();
+      final additions = widget.controller.prepareComments(
+        page.comments.where(
+          (FeedComment item) => item.ref.id.isEmpty || seen.add(item.ref.id),
+        ),
+      );
+      setState(() {
+        _replies = <FeedComment>[..._replies, ...additions];
+        _nextCursor = page.nextCursor;
+        _hasMore = page.hasMore && additions.isNotEmpty;
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    } finally {
+      if (mounted) setState(() => _loadingMore = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          widget.comment.floor > 0 ? '${widget.comment.floor}楼的回复' : '楼中楼回复',
+        ),
+      ),
+      body: RefreshIndicator(
+        onRefresh: _load,
+        child: CustomScrollView(
+          controller: _scrollController,
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: <Widget>[
+            if (_loading)
+              const SliverToBoxAdapter(
+                child: LinearProgressIndicator(minHeight: 2),
+              ),
+            SliverToBoxAdapter(
+              child: _CommentTile(
+                comment: widget.comment.copyWith(
+                  replies: const <FeedComment>[],
+                ),
+                originalPosterId: widget.originalPosterId,
+                density: widget.controller.density,
+                canReply: false,
+                onReply: () {},
+                onTopicTap: widget.comment.ref.source == SourceId.xhs
+                    ? (String topic) => widget.controller
+                          .requestSearchNavigation(SourceId.xhs, topic)
+                    : null,
+              ),
+            ),
+            const SliverToBoxAdapter(child: Divider(height: 1)),
+            if (_error != null)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text('读取全部回复失败：$_error'),
+                ),
+              ),
+            if (!_loading && _replies.isEmpty)
+              const SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Center(child: Text('没有加载到楼中楼回复')),
+                ),
+              )
+            else
+              SliverList.builder(
+                itemCount: _replies.length,
+                itemBuilder: (BuildContext context, int index) => _CommentTile(
+                  comment: _replies[index],
+                  originalPosterId: widget.originalPosterId,
+                  density: widget.controller.density,
+                  canReply: false,
+                  onReply: () {},
+                  onTopicTap: _replies[index].ref.source == SourceId.xhs
+                      ? (String topic) => widget.controller
+                            .requestSearchNavigation(SourceId.xhs, topic)
+                      : null,
+                ),
+              ),
+            if (_loadingMore)
+              const SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.all(20),
+                  child: Center(child: CircularProgressIndicator()),
+                ),
+              )
+            else if (_hasMore)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: OutlinedButton(
+                    onPressed: _loadMore,
+                    child: const Text('加载更多楼中楼'),
+                  ),
+                ),
+              ),
+            const SliverToBoxAdapter(child: SizedBox(height: 28)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _commentTime(DateTime value) {
+  final local = value.toLocal();
+  final now = DateTime.now();
+  if (now.year == local.year &&
+      now.month == local.month &&
+      now.day == local.day) {
+    return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+  }
+  return '${local.month}-${local.day}';
 }
 
 class _InteractionBar extends StatelessWidget {
@@ -750,28 +1343,13 @@ class _DetailFailure extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(28),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            Icon(
-              Icons.error_outline,
-              size: 46,
-              color: Theme.of(context).colorScheme.error,
-            ),
-            const SizedBox(height: 12),
-            Text(error, textAlign: TextAlign.center),
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh),
-              label: const Text('重试'),
-            ),
-          ],
-        ),
-      ),
+    return AppStateView(
+      icon: Icons.error_outline_rounded,
+      iconColor: Theme.of(context).colorScheme.error,
+      title: '帖子加载失败',
+      message: error,
+      actionLabel: '重新加载',
+      onAction: onRetry,
     );
   }
 }
@@ -792,12 +1370,14 @@ class _VideoScreen extends StatefulWidget {
 }
 
 class _VideoScreenState extends State<_VideoScreen> {
-  WebViewController? _videoController;
+  VideoPlayerController? _playerController;
   bool _loading = true;
+  bool _webFallback = false;
   Object? _error;
 
   bool get _usesContentPage =>
-      widget.media.url.isEmpty && widget.item.ref.source == SourceId.xhs;
+      _webFallback ||
+      (widget.media.url.isEmpty && widget.item.ref.source == SourceId.xhs);
 
   @override
   void initState() {
@@ -805,52 +1385,99 @@ class _VideoScreenState extends State<_VideoScreen> {
     unawaited(_prepare());
   }
 
+  @override
+  void dispose() {
+    unawaited(_playerController?.dispose());
+    super.dispose();
+  }
+
   Future<void> _prepare() async {
     try {
       if (_usesContentPage) {
         await widget.controller.xhs.openContentPage(widget.item.ref);
       } else {
-        final url = widget.media.url;
-        if (url.isEmpty) throw StateError('当前内容没有可播放的视频地址');
-        final videoController = WebViewController();
-        await videoController.setJavaScriptMode(JavaScriptMode.unrestricted);
-        await videoController.setBackgroundColor(Colors.black);
-        await videoController.setNavigationDelegate(
-          NavigationDelegate(
-            onPageFinished: (_) {
-              if (mounted) setState(() => _loading = false);
-            },
-            onWebResourceError: (WebResourceError error) {
-              if (error.isForMainFrame == true && mounted) {
-                setState(() => _error = error.description);
-              }
-            },
-          ),
-        );
-        final escaped = const HtmlEscape(HtmlEscapeMode.attribute).convert(url);
-        await videoController.loadHtmlString(
-          '''<!doctype html>
-<html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-<style>html,body{margin:0;width:100%;height:100%;background:#000}video{width:100%;height:100%;object-fit:contain}</style>
-</head><body><video src="$escaped" controls autoplay playsinline></video></body></html>''',
-        );
-        if (!mounted) return;
-        setState(() => _videoController = videoController);
+        final playerController = await _initializeNativePlayer();
+        if (!mounted) {
+          await playerController.dispose();
+          return;
+        }
+        setState(() => _playerController = playerController);
       }
     } catch (error) {
-      if (mounted) setState(() => _error = error);
+      if (widget.item.ref.source == SourceId.xhs && !_webFallback) {
+        try {
+          await widget.controller.xhs.openContentPage(widget.item.ref);
+          if (mounted) {
+            setState(() {
+              _webFallback = true;
+              _error = null;
+            });
+          }
+        } catch (fallbackError) {
+          if (mounted) setState(() => _error = fallbackError);
+        }
+      } else if (mounted) {
+        setState(() => _error = error);
+      }
     } finally {
-      if (mounted && _usesContentPage) setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
     }
+  }
+
+  Future<VideoPlayerController> _initializeNativePlayer() async {
+    final preferred = mediaUri(widget.media.url, preferHttps: true);
+    final original = mediaUri(widget.media.url);
+    if (preferred == null) throw StateError('当前内容没有有效的可播放地址');
+    final attempts = <({Uri uri, Map<String, String> headers})>[
+      (
+        uri: preferred,
+        headers: mediaRequestHeaders(widget.item.ref.source, video: true),
+      ),
+      (uri: preferred, headers: const <String, String>{}),
+      if (original != null && original != preferred)
+        (
+          uri: original,
+          headers: mediaRequestHeaders(widget.item.ref.source, video: true),
+        ),
+    ];
+    Object? lastError;
+    for (final attempt in attempts) {
+      final playerController = VideoPlayerController.networkUrl(
+        attempt.uri,
+        httpHeaders: attempt.headers,
+      );
+      try {
+        await playerController.initialize();
+        await playerController.play();
+        return playerController;
+      } on Object catch (error) {
+        lastError = error;
+        await playerController.dispose();
+      }
+    }
+    throw StateError('视频播放器初始化失败：$lastError');
+  }
+
+  Future<void> _retry() async {
+    final previous = _playerController;
+    _playerController = null;
+    await previous?.dispose();
+    if (!mounted) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    await _prepare();
   }
 
   @override
   Widget build(BuildContext context) {
+    final player = _playerController;
     final child = _usesContentPage
         ? widget.controller.xhs.webView(key: const Key('xhs-content-webview'))
-        : _videoController == null
+        : player == null
         ? const SizedBox.expand()
-        : WebViewWidget(controller: _videoController!);
+        : _VideoPlayerSurface(controller: player);
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -866,14 +1493,93 @@ class _VideoScreenState extends State<_VideoScreen> {
             Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),
-                child: Text(
-                  _error.toString(),
-                  style: const TextStyle(color: Colors.white),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Text(
+                      _error.toString(),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: () => unawaited(_retry()),
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('重试播放'),
+                    ),
+                  ],
                 ),
               ),
             ),
         ],
       ),
+    );
+  }
+}
+
+class _VideoPlayerSurface extends StatelessWidget {
+  const _VideoPlayerSurface({required this.controller});
+
+  final VideoPlayerController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<VideoPlayerValue>(
+      valueListenable: controller,
+      builder: (BuildContext context, VideoPlayerValue value, Widget? child) {
+        final ratio = value.aspectRatio > 0 ? value.aspectRatio : 16 / 9;
+        return Center(
+          child: AspectRatio(
+            aspectRatio: ratio,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => unawaited(
+                value.isPlaying ? controller.pause() : controller.play(),
+              ),
+              child: Stack(
+                fit: StackFit.expand,
+                children: <Widget>[
+                  VideoPlayer(controller),
+                  if (value.isBuffering)
+                    const Center(child: CircularProgressIndicator()),
+                  if (!value.isPlaying && !value.isBuffering)
+                    const Center(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Padding(
+                          padding: EdgeInsets.all(12),
+                          child: Icon(
+                            Icons.play_arrow_rounded,
+                            color: Colors.white,
+                            size: 46,
+                          ),
+                        ),
+                      ),
+                    ),
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: VideoProgressIndicator(
+                      controller,
+                      allowScrubbing: true,
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      colors: const VideoProgressColors(
+                        playedColor: Colors.redAccent,
+                        bufferedColor: Colors.white38,
+                        backgroundColor: Colors.white24,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }

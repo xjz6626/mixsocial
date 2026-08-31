@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'app_controller.dart';
+import 'design_system.dart';
 import 'home_screen.dart';
 
 class MixsocialApp extends StatefulWidget {
@@ -17,7 +20,11 @@ class _MixsocialAppState extends State<MixsocialApp> {
 
   Future<MixsocialController> _createController() async {
     final controller = widget.controller ?? await MixsocialController.create();
-    if (controller.items.isEmpty) await controller.refresh();
+    if (controller.items.isEmpty) {
+      await controller.refresh();
+    } else {
+      unawaited(controller.refresh());
+    }
     return controller;
   }
 
@@ -27,38 +34,49 @@ class _MixsocialAppState extends State<MixsocialApp> {
 
   @override
   Widget build(BuildContext context) {
+    return FutureBuilder<MixsocialController>(
+      future: _controller,
+      builder: (context, snapshot) {
+        if (snapshot.hasData) {
+          final controller = snapshot.requireData;
+          return ValueListenableBuilder<AppThemePreference>(
+            valueListenable: controller.themePreferenceNotifier,
+            child: HomeScreen(controller: controller),
+            builder:
+                (
+                  BuildContext context,
+                  AppThemePreference preference,
+                  Widget? child,
+                ) =>
+                    _materialApp(themeMode: preference.themeMode, home: child!),
+          );
+        }
+        if (snapshot.hasError) {
+          return _materialApp(
+            home: _StartupFailure(
+              message: snapshot.error.toString(),
+              onRetry: _retry,
+            ),
+          );
+        }
+        return _materialApp(home: const _StartupProgress());
+      },
+    );
+  }
+
+  Widget _materialApp({
+    required Widget home,
+    ThemeMode themeMode = ThemeMode.system,
+  }) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Mixsocial',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xffef3653),
-          brightness: Brightness.light,
-          surface: const Color(0xfffffbff),
-        ),
-        useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xfff8f7fa),
-        cardTheme: const CardThemeData(
-          clipBehavior: Clip.antiAlias,
-          elevation: 0,
-          margin: EdgeInsets.zero,
-        ),
-      ),
-      home: FutureBuilder<MixsocialController>(
-        future: _controller,
-        builder: (context, snapshot) {
-          if (snapshot.hasData) {
-            return HomeScreen(controller: snapshot.requireData);
-          }
-          if (snapshot.hasError) {
-            return _StartupFailure(
-              message: snapshot.error.toString(),
-              onRetry: _retry,
-            );
-          }
-          return const _StartupProgress();
-        },
-      ),
+      theme: buildAppTheme(Brightness.light),
+      darkTheme: buildAppTheme(Brightness.dark),
+      themeMode: themeMode,
+      themeAnimationDuration: const Duration(milliseconds: 280),
+      themeAnimationCurve: Curves.easeOutCubic,
+      home: home,
     );
   }
 }
@@ -69,17 +87,8 @@ class _StartupProgress extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const Scaffold(
-      body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            Icon(Icons.hub_outlined, size: 44),
-            SizedBox(height: 20),
-            CircularProgressIndicator(),
-            SizedBox(height: 12),
-            Text('正在连接内容源…'),
-          ],
-        ),
+      body: SafeArea(
+        child: AppLoadingView(title: '正在启动 Mixsocial', message: '正在恢复设置并连接内容源'),
       ),
     );
   }
@@ -93,35 +102,16 @@ class _StartupFailure extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Scaffold(
       body: SafeArea(
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(28),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Icon(
-                  Icons.cloud_off_outlined,
-                  size: 52,
-                  color: Theme.of(context).colorScheme.error,
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  '移动核心初始化失败',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-                const SizedBox(height: 8),
-                Text(message, textAlign: TextAlign.center),
-                const SizedBox(height: 20),
-                FilledButton.icon(
-                  onPressed: onRetry,
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('重试'),
-                ),
-              ],
-            ),
-          ),
+        child: AppStateView(
+          icon: Icons.cloud_off_outlined,
+          iconColor: colors.error,
+          title: '移动核心初始化失败',
+          message: message,
+          actionLabel: '重新连接',
+          onAction: onRetry,
         ),
       ),
     );

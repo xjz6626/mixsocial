@@ -48,7 +48,6 @@ type Author struct {
 	Name      string     `json:"name"`
 	Avatar    string     `json:"avatar,omitempty"`
 	Following bool       `json:"following,omitempty"`
-	Blocked   bool       `json:"blocked,omitempty"`
 }
 
 type Stats struct {
@@ -87,15 +86,25 @@ type Comment struct {
 	Author      Author    `json:"author"`
 	Body        string    `json:"body"`
 	PublishedAt time.Time `json:"publishedAt,omitempty"`
+	Floor       int       `json:"floor,omitempty"`
 	Likes       int64     `json:"likes,omitempty"`
+	ReplyCount  int64     `json:"replyCount,omitempty"`
 	Media       []Media   `json:"media,omitempty"`
 	Replies     []Comment `json:"replies,omitempty"`
 }
 
+type CommentPage struct {
+	Comments   []Comment `json:"comments,omitempty"`
+	NextCursor string    `json:"nextCursor,omitempty"`
+	HasMore    bool      `json:"hasMore,omitempty"`
+}
+
 type Detail struct {
 	Item
-	Body     string    `json:"body"`
-	Comments []Comment `json:"comments,omitempty"`
+	Body       string    `json:"body"`
+	Comments   []Comment `json:"comments,omitempty"`
+	NextCursor string    `json:"nextCursor,omitempty"`
+	HasMore    bool      `json:"hasMore,omitempty"`
 }
 
 type Page struct {

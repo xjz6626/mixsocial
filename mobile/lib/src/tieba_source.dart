@@ -7,7 +7,8 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'models.dart';
 import 'source.dart';
 
-class TiebaSource implements FeedSource {
+class TiebaSource
+    implements FeedSource, ForumReader, ThreadPageReader, FloorReplyReader {
   TiebaSource._(this._secureStorage);
 
   static const _credentialKey = 'tieba.bduss';
@@ -59,6 +60,54 @@ class TiebaSource implements FeedSource {
   @override
   Future<FeedDetail> detail(ContentRef ref) async => FeedDetail.decode(
     await MixsocialCore.tiebaDetail(jsonEncode(ref.toJson())),
+  );
+
+  @override
+  Future<FeedPage> forum(
+    String forum, {
+    String cursor = '',
+    int sortType = 0,
+  }) async => FeedPage.decode(
+    await MixsocialCore.forumTieba(forum, cursor, sortType: sortType),
+  );
+
+  @override
+  Future<FeedPage> searchForum(
+    String forum,
+    String query, {
+    String cursor = '',
+  }) async => FeedPage.decode(
+    await MixsocialCore.searchForumTieba(forum, query, cursor),
+  );
+
+  @override
+  Future<List<String>> followingForums() async =>
+      (jsonDecode(await MixsocialCore.followingForumsTieba()) as List<Object?>)
+          .map((Object? value) => value.toString())
+          .where((String value) => value.isNotEmpty)
+          .toList();
+
+  @override
+  Future<FeedDetail> detailPage(
+    ContentRef ref, {
+    String cursor = '',
+    bool reverse = false,
+    bool onlyOriginalPoster = false,
+  }) async => FeedDetail.decode(
+    await MixsocialCore.tiebaDetailPage(
+      jsonEncode(ref.toJson()),
+      cursor,
+      reverse: reverse,
+      onlyOriginalPoster: onlyOriginalPoster,
+    ),
+  );
+
+  @override
+  Future<FeedCommentPage> floorReplies(
+    ContentRef floor, {
+    String cursor = '',
+  }) async => FeedCommentPage.decode(
+    await MixsocialCore.floorRepliesTieba(jsonEncode(floor.toJson()), cursor),
   );
 
   Future<void> loginWithCredential(String credential) async {

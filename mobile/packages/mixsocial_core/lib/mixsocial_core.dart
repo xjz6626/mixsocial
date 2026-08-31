@@ -36,11 +36,68 @@ class MixsocialCore {
         '{"items":[]}';
   }
 
+  static Future<String> forumTieba(
+    String forum,
+    String cursor, {
+    int sortType = 0,
+  }) async {
+    return (await _invoke<String>('tieba.forum', <String, Object>{
+          'forum': forum,
+          'cursor': cursor,
+          'sortType': sortType,
+        })) ??
+        '{"items":[]}';
+  }
+
+  static Future<String> searchForumTieba(
+    String forum,
+    String query,
+    String cursor,
+  ) async {
+    return (await _invoke<String>('tieba.searchForum', <String, Object>{
+          'forum': forum,
+          'query': query,
+          'cursor': cursor,
+        })) ??
+        '{"items":[]}';
+  }
+
+  static Future<String> followingForumsTieba() async {
+    return (await _invoke<String>(
+          'tieba.followingForums',
+          const <String, Object>{},
+        )) ??
+        '[]';
+  }
+
   static Future<String> tiebaDetail(String refJson) async {
     return (await _invoke<String>('tieba.detail', <String, Object>{
           'ref': refJson,
         })) ??
         '{}';
+  }
+
+  static Future<String> tiebaDetailPage(
+    String refJson,
+    String cursor, {
+    bool reverse = false,
+    bool onlyOriginalPoster = false,
+  }) async {
+    return (await _invoke<String>('tieba.detailPage', <String, Object>{
+          'ref': refJson,
+          'cursor': cursor,
+          'reverse': reverse,
+          'onlyOriginalPoster': onlyOriginalPoster,
+        })) ??
+        '{}';
+  }
+
+  static Future<String> floorRepliesTieba(String refJson, String cursor) async {
+    return (await _invoke<String>('tieba.floorReplies', <String, Object>{
+          'ref': refJson,
+          'cursor': cursor,
+        })) ??
+        '{"comments":[]}';
   }
 
   static Future<String> loginTieba(String credential) async {
@@ -52,6 +109,30 @@ class MixsocialCore {
 
   static Future<void> clearTiebaCredential() async {
     await _channel.invokeMethod<void>('tieba.clearCredential');
+  }
+
+  /// Downloads and normalizes an image with Android's native image stack.
+  ///
+  /// Some Tieba/XHS CDN responses that Android image loaders accept are not
+  /// rendered reliably by Flutter's NetworkImage on every device. The native
+  /// bridge decodes the response with BitmapFactory and returns a conventional
+  /// JPEG/PNG, so the Flutter side only has to paint known-good bytes.
+  static Future<Uint8List> fetchImage(
+    String url, {
+    Map<String, String> headers = const <String, String>{},
+    int maxDimension = 2048,
+  }) async {
+    final bytes = await _channel
+        .invokeMethod<Uint8List>('media.fetchImage', <String, Object>{
+          'url': url,
+          'headers': headers,
+          'maxDimension': maxDimension,
+        })
+        .timeout(const Duration(seconds: 35));
+    if (bytes == null || bytes.isEmpty) {
+      throw const MixsocialCoreException('MEDIA_EMPTY', '媒体响应为空');
+    }
+    return bytes;
   }
 
   static Future<T?> _invoke<T>(

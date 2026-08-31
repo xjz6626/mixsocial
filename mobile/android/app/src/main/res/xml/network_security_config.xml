@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">baidu.com</domain>
+        <domain includeSubdomains="true">bdimg.com</domain>
+        <domain includeSubdomains="true">bdstatic.com</domain>
+        <domain includeSubdomains="true">baidubce.com</domain>
+        <domain includeSubdomains="true">bcebos.com</domain>
+        <domain includeSubdomains="true">xiaohongshu.com</domain>
+        <domain includeSubdomains="true">xhscdn.com</domain>
+    </domain-config>
+</network-security-config>

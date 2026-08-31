@@ -1,4 +1,4 @@
-.PHONY: build test vet check install mobile-aar mobile-analyze mobile-test mobile-check
+.PHONY: build test vet check install mobile-aar mobile-analyze mobile-test mobile-check mobile-apk-check
 
 build:
 	go build -buildvcs=false -o mixsocial ./cmd/mixsocial
@@ -24,3 +24,6 @@ mobile-test:
 	cd mobile && flutter test
 
 mobile-check: mobile-analyze mobile-test
+
+mobile-apk-check:
+	./mobile/scripts/verify_android_apk.sh

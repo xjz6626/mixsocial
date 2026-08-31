@@ -9,7 +9,9 @@
 - 三个首页频道：按 `1` / `2` / `3` 切换推荐、热榜和关注，仍可用 `Tab` 过滤平台。
 - 信息流条目之间保留空行；详情页会自动使用 Kitty、iTerm2 或 Sixel 原生图片协议，不支持时回退到 ANSI 真彩半块，支持 JPEG、PNG、GIF 和 WebP。
 - 每次刷出列表后会用受控并发在后台缓存全部话题详情及每个话题最多 9 项媒体；详情缓存覆盖当前列表，媒体使用约 192 MiB 内存 LRU 和约 512 MiB 磁盘 LRU，切换话题不再重复下载和解码。
-- 百度贴吧：直接用 Go 编解码移动端 protobuf；支持全站热议榜、按吧主题、主题楼层、百度 App 扫码登录、BDUSS 备用登录和已关注贴吧内容，无 Python 运行时。
+- 百度贴吧：直接用 Go 编解码移动端 protobuf；支持官方个性推荐流、全站热议榜、按吧主题、主题楼层、百度 App 扫码登录、BDUSS 备用登录和已关注贴吧内容，无 Python 运行时。
+- Android 客户端补齐贴吧目录、吧内搜索与排序、详情/楼中楼分页、倒序/只看楼主、本地收藏与历史、离线信息流、阅读密度、图片缩放，以及按吧/关键词/媒体过滤；不提供按作者屏蔽。
+- Android 小红书使用 PC WebView 扫码/验证码登录，不再跳转 App；支持搜索筛选、完整评论/楼中楼加载、作者主页的笔记/收藏/点赞分页。
 - 小红书：安装脚本会把固定版本的 `xiaohongshu-mcp` 一并装到 `mixsocial` 旁边；`mixsocial` 启动和回收子进程，用户无需手动运行 sidecar。可在 TUI 内扫码登录，Cookie 和网页签名仍由成熟的上游实现管理。
 - 所有会改变账号状态的操作都要求在 TUI 中再次按 `y` 确认。
 
@@ -46,7 +48,7 @@ mixsocial --demo
 go run ./cmd/mixsocial --demo
 ```
 
-真实贴吧的公开读取和热议榜不要求登录。`--tieba-forums` 配置推荐频道要混合的吧；未配置但已登录时会使用已关注贴吧。搜索时，贴吧来源会把搜索词解释为吧名。
+真实贴吧的公开读取、全站主题搜索和热议榜不要求登录。推荐频道会直接请求贴吧官方推荐接口；登录后请求会携带已校验的账号会话，以获得账号对应的个性推荐。`--tieba-forums` 可显式把推荐频道覆盖为指定贴吧的聚合流。
 
 ```bash
 go run ./cmd/mixsocial \
@@ -94,7 +96,7 @@ mixsocial --xhs-managed=false
 
 | 频道 | 百度贴吧 | 小红书 |
 | --- | --- | --- |
-| 推荐 | `--tieba-forums` 中的吧；未配置且已登录时使用已关注贴吧 | sidecar 提供的首页推荐流 |
+| 推荐 | 贴吧官方个性推荐流；设置 `--tieba-forums` 时才覆盖为指定吧聚合 | sidecar 提供的首页推荐流 |
 | 热榜 | 贴吧全站官方“热议话题”榜；接口失败时回退到常看 / 已关注吧的热门排序 | 对本次推荐样本按点赞、收藏、评论、分享加权排序；不是官方全站榜 |
 | 关注 | 登录账号实际关注的贴吧内容，单次最多读取前 8 个吧以控制频率 | 当前 sidecar 没有关注内容流路由，频道会明确显示能力提示，不用推荐流冒充 |
 
@@ -155,4 +157,4 @@ go build -buildvcs=false -o mixsocial ./cmd/mixsocial
 
 适配器和 TUI 之间只通过 `internal/source.Reader`、`Interactor` 以及统一领域模型通信。sidecar 的进程生命周期由 `internal/sidecar` 管理。
 
-接口来源与许可证记录见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+Android 与 TiebaLite 的功能取舍见 [TIEBALITE_PARITY.md](TIEBALITE_PARITY.md)，小红书阅读链路见 [XHS_PARITY.md](XHS_PARITY.md)，接口来源与许可证记录见 [THIRD_PARTY.md](THIRD_PARTY.md)。

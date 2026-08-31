@@ -1,16 +1,19 @@
 import 'package:flutter/material.dart';
 
 import 'models.dart';
+import 'network_media.dart';
 
 class FeedMediaPreview extends StatelessWidget {
   const FeedMediaPreview({
     super.key,
     required this.item,
     this.borderRadius = BorderRadius.zero,
+    this.maxDimension = 960,
   });
 
   final FeedItem item;
   final BorderRadius borderRadius;
+  final int maxDimension;
 
   @override
   Widget build(BuildContext context) {
@@ -26,9 +29,12 @@ class FeedMediaPreview extends StatelessWidget {
             fit: StackFit.expand,
             children: <Widget>[
               if (media != null && media.displayUrl.isNotEmpty)
-                Image.network(
-                  media.displayUrl,
+                SourceNetworkImage(
+                  url: media.displayUrl,
+                  source: item.ref.source,
                   fit: BoxFit.cover,
+                  maxDimension: maxDimension,
+                  semanticLabel: media.kind == 'video' ? '视频预览' : '图片预览',
                   errorBuilder: (context, error, stackTrace) =>
                       const _MediaFallback(),
                 )
@@ -121,8 +127,9 @@ class AuthorAvatar extends StatelessWidget {
       radius: radius,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       child: ClipOval(
-        child: Image.network(
-          author.avatar,
+        child: SourceNetworkImage(
+          url: author.avatar,
+          source: author.ref.source,
           width: radius * 2,
           height: radius * 2,
           fit: BoxFit.cover,

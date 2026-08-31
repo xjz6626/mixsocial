@@ -99,11 +99,39 @@ func (t *Tieba) SearchWithRequest(requestID, query, cursor string) (string, erro
 	return encode(page, err)
 }
 
+func (t *Tieba) ForumWithRequest(requestID, forum, cursor string, sortType int) (string, error) {
+	provider := t.snapshot()
+	ctx, finish := t.begin(requestID)
+	defer finish()
+	page, err := provider.Forum(ctx, forum, cursor, sortType)
+	return encode(page, err)
+}
+
+func (t *Tieba) SearchForumWithRequest(requestID, forum, query, cursor string) (string, error) {
+	provider := t.snapshot()
+	ctx, finish := t.begin(requestID)
+	defer finish()
+	page, err := provider.SearchForumThreads(ctx, forum, query, cursor)
+	return encode(page, err)
+}
+
+func (t *Tieba) FollowingForumsWithRequest(requestID string) (string, error) {
+	provider := t.snapshot()
+	ctx, finish := t.begin(requestID)
+	defer finish()
+	forums, err := provider.FollowingForums(ctx)
+	return encode(forums, err)
+}
+
 func (t *Tieba) Detail(refJSON string) (string, error) {
 	return t.DetailWithRequest("", refJSON)
 }
 
 func (t *Tieba) DetailWithRequest(requestID, refJSON string) (string, error) {
+	return t.DetailPageWithRequest(requestID, refJSON, "", false, false)
+}
+
+func (t *Tieba) DetailPageWithRequest(requestID, refJSON, cursor string, reverse, onlyOriginalPoster bool) (string, error) {
 	var ref domain.Ref
 	if err := json.Unmarshal([]byte(refJSON), &ref); err != nil {
 		return "", fmt.Errorf("parse Tieba ref: %w", err)
@@ -117,8 +145,26 @@ func (t *Tieba) DetailWithRequest(requestID, refJSON string) (string, error) {
 	provider := t.snapshot()
 	ctx, finish := t.begin(requestID)
 	defer finish()
-	detail, err := provider.Detail(ctx, ref)
+	detail, err := provider.DetailPage(ctx, ref, cursor, reverse, onlyOriginalPoster)
 	return encode(detail, err)
+}
+
+func (t *Tieba) FloorRepliesWithRequest(requestID, refJSON, cursor string) (string, error) {
+	var ref domain.Ref
+	if err := json.Unmarshal([]byte(refJSON), &ref); err != nil {
+		return "", fmt.Errorf("parse Tieba floor ref: %w", err)
+	}
+	if ref.Source == "" {
+		ref.Source = domain.SourceTieba
+	}
+	if ref.Source != domain.SourceTieba || strings.TrimSpace(ref.ID) == "" || strings.TrimSpace(ref.ParentID) == "" {
+		return "", fmt.Errorf("invalid Tieba floor ref")
+	}
+	provider := t.snapshot()
+	ctx, finish := t.begin(requestID)
+	defer finish()
+	page, err := provider.FloorReplies(ctx, ref, cursor)
+	return encode(page, err)
 }
 
 func (t *Tieba) LoginWithCredential(credential string) (string, error) {

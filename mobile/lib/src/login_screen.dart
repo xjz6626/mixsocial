@@ -4,6 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import 'app_controller.dart';
+import 'design_system.dart';
+import 'forum_screen.dart';
+import 'reader_tools_screen.dart';
 
 class AccountScreen extends StatefulWidget {
   const AccountScreen({super.key, required this.controller});
@@ -206,9 +209,67 @@ class _AccountScreenState extends State<AccountScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final xhsCard = _AccountCard(
+      color: const Color(0xffe9274f),
+      icon: Icons.auto_awesome,
+      title: '小红书',
+      connected: _xhsLoggedIn,
+      status: _xhsLoggedIn
+          ? '已登录，Cookie 由系统 WebView 持久化'
+          : _xhsStatusError == null
+          ? '未检测到登录状态'
+          : '暂时无法检查登录状态',
+      detail: _xhsStatusError?.toString(),
+      action: FilledButton.icon(
+        onPressed: _checking ? null : _openXhsLogin,
+        icon: const Icon(Icons.language),
+        label: Text(_xhsLoggedIn ? '打开登录页' : '使用 WebView 登录'),
+      ),
+    );
+    final tiebaCard = _AccountCard(
+      color: const Color(0xff3478f6),
+      icon: Icons.forum_outlined,
+      title: '百度贴吧',
+      connected: _tiebaCredentialSaved,
+      status: _tiebaCredentialSaved ? '已登录并保存 BDUSS' : '尚未登录',
+      detail: _tiebaCredentialSaved
+          ? '凭据将在应用启动时从 Android Keystore 恢复。'
+          : '推荐在百度官方网页中完成登录；也可以安全导入已有 BDUSS。',
+      action: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          FilledButton.icon(
+            onPressed: _checking ? null : _openTiebaLogin,
+            icon: const Icon(Icons.language),
+            label: Text(_tiebaCredentialSaved ? '重新网页登录' : '使用 WebView 登录'),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _checking ? null : _importBduss,
+                  icon: const Icon(Icons.key_outlined),
+                  label: Text(_tiebaCredentialSaved ? '更换 BDUSS' : '导入 BDUSS'),
+                ),
+              ),
+              if (_tiebaCredentialSaved) ...<Widget>[
+                const SizedBox(width: AppSpacing.sm),
+                IconButton.filledTonal(
+                  tooltip: '退出登录',
+                  onPressed: _checking ? null : _logoutTieba,
+                  icon: const Icon(Icons.logout),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('账号与登录'),
+        title: const Text('我的'),
         actions: <Widget>[
           IconButton(
             tooltip: '重新检查',
@@ -217,91 +278,141 @@ class _AccountScreenState extends State<AccountScreen> {
           ),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: <Widget>[
-          if (_checking) const LinearProgressIndicator(minHeight: 2),
-          const SizedBox(height: 10),
-          _AccountCard(
-            color: const Color(0xffe9274f),
-            icon: Icons.auto_awesome,
-            title: '小红书',
-            status: _xhsLoggedIn
-                ? '已登录，Cookie 由系统 WebView 持久化'
-                : _xhsStatusError == null
-                ? '未检测到登录状态'
-                : '暂时无法检查登录状态',
-            detail: _xhsStatusError?.toString(),
-            action: FilledButton.icon(
-              onPressed: _checking ? null : _openXhsLogin,
-              icon: const Icon(Icons.language),
-              label: Text(_xhsLoggedIn ? '打开登录页' : '使用 WebView 登录'),
-            ),
-          ),
-          const SizedBox(height: 14),
-          _AccountCard(
-            color: const Color(0xff3478f6),
-            icon: Icons.forum_outlined,
-            title: '百度贴吧',
-            status: _tiebaCredentialSaved ? '已登录并保存 BDUSS' : '尚未登录',
-            detail: _tiebaCredentialSaved
-                ? '凭据将在应用启动时从 Android Keystore 恢复。'
-                : '推荐在百度官方网页中完成登录；也可以安全导入已有 BDUSS。',
-            action: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+      body: RefreshIndicator(
+        onRefresh: _refreshStatus,
+        child: LayoutBuilder(
+          builder: (BuildContext context, BoxConstraints constraints) {
+            final wide = constraints.maxWidth >= 760;
+            return ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.all(AppSpacing.lg),
               children: <Widget>[
-                FilledButton.icon(
-                  onPressed: _checking ? null : _openTiebaLogin,
-                  icon: const Icon(Icons.language),
-                  label: Text(
-                    _tiebaCredentialSaved ? '重新网页登录' : '使用 WebView 登录',
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: <Widget>[
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _checking ? null : _importBduss,
-                        icon: const Icon(Icons.key_outlined),
-                        label: Text(
-                          _tiebaCredentialSaved ? '更换 BDUSS' : '导入 BDUSS',
+                Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 1040),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: <Widget>[
+                        if (_checking)
+                          const LinearProgressIndicator(minHeight: 2),
+                        const SizedBox(height: AppSpacing.md),
+                        if (wide)
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Expanded(child: xhsCard),
+                              const SizedBox(width: AppSpacing.lg),
+                              Expanded(child: tiebaCard),
+                            ],
+                          )
+                        else ...<Widget>[
+                          xhsCard,
+                          const SizedBox(height: AppSpacing.md),
+                          tiebaCard,
+                        ],
+                        const SizedBox(height: AppSpacing.xl),
+                        Text(
+                          '阅读工具',
+                          style: Theme.of(context).textTheme.titleMedium,
                         ),
-                      ),
+                        const SizedBox(height: AppSpacing.md),
+                        Card(
+                          child: Column(
+                            children: <Widget>[
+                              ListTile(
+                                leading: const Icon(Icons.forum_outlined),
+                                title: const Text('贴吧目录'),
+                                subtitle: const Text('已关注贴吧、最近访问和按吧浏览'),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () => Navigator.push<void>(
+                                  context,
+                                  MaterialPageRoute<void>(
+                                    builder: (_) => ForumHubScreen(
+                                      controller: widget.controller,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const Divider(),
+                              ListTile(
+                                leading: const Icon(Icons.history),
+                                title: const Text('浏览历史'),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () => Navigator.push<void>(
+                                  context,
+                                  MaterialPageRoute<void>(
+                                    builder: (_) => LocalLibraryScreen(
+                                      controller: widget.controller,
+                                      kind: LocalLibraryKind.history,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const Divider(),
+                              ListTile(
+                                leading: const Icon(Icons.bookmarks_outlined),
+                                title: const Text('本地收藏'),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () => Navigator.push<void>(
+                                  context,
+                                  MaterialPageRoute<void>(
+                                    builder: (_) => LocalLibraryScreen(
+                                      controller: widget.controller,
+                                      kind: LocalLibraryKind.saved,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const Divider(),
+                              ListTile(
+                                leading: const Icon(Icons.filter_alt_outlined),
+                                title: const Text('内容与阅读设置'),
+                                subtitle: const Text('按吧/关键词过滤、隐藏视频、阅读密度'),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () => Navigator.push<void>(
+                                  context,
+                                  MaterialPageRoute<void>(
+                                    builder: (_) => ContentSettingsScreen(
+                                      controller: widget.controller,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: AppSpacing.lg),
+                        Card(
+                          child: Padding(
+                            padding: const EdgeInsets.all(AppSpacing.lg),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: <Widget>[
+                                const Icon(Icons.security_outlined),
+                                const SizedBox(width: AppSpacing.md),
+                                Expanded(
+                                  child: Text(
+                                    'Cookie 和 BDUSS 不进入信息流、详情或普通缓存数据库。请勿把 BDUSS 发给他人。',
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.bodyMedium,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: AppSpacing.xl),
+                      ],
                     ),
-                    if (_tiebaCredentialSaved) ...<Widget>[
-                      const SizedBox(width: 8),
-                      IconButton.filledTonal(
-                        tooltip: '退出登录',
-                        onPressed: _checking ? null : _logoutTieba,
-                        icon: const Icon(Icons.logout),
-                      ),
-                    ],
-                  ],
+                  ),
                 ),
               ],
-            ),
-          ),
-          const SizedBox(height: 18),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  const Icon(Icons.security_outlined),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'Cookie 和 BDUSS 不进入信息流、详情或后续的普通缓存数据库。请勿把 BDUSS 发给他人。',
-                      style: Theme.of(context).textTheme.bodyMedium,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
+            );
+          },
+        ),
       ),
     );
   }
@@ -438,27 +549,26 @@ class _TiebaLoginScreenState extends State<TiebaLoginScreen> {
                     ),
                   ),
                 if (_loading || webViewController == null)
-                  const Center(child: CircularProgressIndicator()),
+                  Positioned.fill(
+                    child: ColoredBox(
+                      color: Theme.of(context).scaffoldBackgroundColor,
+                      child: const AppLoadingView(
+                        title: '正在打开百度登录',
+                        message: '登录凭据只会保存在系统安全存储',
+                      ),
+                    ),
+                  ),
                 if (_error != null)
-                  Center(
-                    child: Card(
-                      margin: const EdgeInsets.all(24),
-                      child: Padding(
-                        padding: const EdgeInsets.all(18),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: <Widget>[
-                            Text(
-                              _error.toString(),
-                              textAlign: TextAlign.center,
-                            ),
-                            const SizedBox(height: 12),
-                            FilledButton(
-                              onPressed: _reload,
-                              child: const Text('重试'),
-                            ),
-                          ],
-                        ),
+                  Positioned.fill(
+                    child: ColoredBox(
+                      color: Theme.of(context).scaffoldBackgroundColor,
+                      child: AppStateView(
+                        icon: Icons.cloud_off_outlined,
+                        iconColor: Theme.of(context).colorScheme.error,
+                        title: '百度登录页加载失败',
+                        message: _error.toString(),
+                        actionLabel: '重新加载',
+                        onAction: _reload,
                       ),
                     ),
                   ),
@@ -503,6 +613,7 @@ class _AccountCard extends StatelessWidget {
     required this.color,
     required this.icon,
     required this.title,
+    required this.connected,
     required this.status,
     required this.action,
     this.detail,
@@ -511,15 +622,17 @@ class _AccountCard extends StatelessWidget {
   final Color color;
   final IconData icon;
   final String title;
+  final bool connected;
   final String status;
   final String? detail;
   final Widget action;
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(AppSpacing.lg),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
@@ -535,6 +648,39 @@ class _AccountCard extends StatelessWidget {
                   child: Text(
                     title,
                     style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                ),
+                Semantics(
+                  label: connected ? '已连接' : '未连接',
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: connected
+                          ? colors.primaryContainer
+                          : colors.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(AppRadii.sm),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: AppSpacing.sm,
+                        vertical: AppSpacing.xs,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: <Widget>[
+                          Icon(
+                            connected
+                                ? Icons.check_circle_outline
+                                : Icons.circle_outlined,
+                            size: 15,
+                          ),
+                          const SizedBox(width: AppSpacing.xs),
+                          Text(
+                            connected ? '已连接' : '未连接',
+                            style: Theme.of(context).textTheme.labelMedium,
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -566,7 +712,9 @@ class XhsLoginScreen extends StatefulWidget {
 class _XhsLoginScreenState extends State<XhsLoginScreen> {
   bool _loading = true;
   bool _checking = false;
+  bool _polling = false;
   Object? _error;
+  Timer? _loginPoll;
 
   @override
   void initState() {
@@ -575,13 +723,46 @@ class _XhsLoginScreenState extends State<XhsLoginScreen> {
   }
 
   Future<void> _open() async {
+    _loginPoll?.cancel();
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
       await widget.controller.xhs.openLogin();
+      _loginPoll = Timer.periodic(
+        const Duration(milliseconds: 1200),
+        (_) => unawaited(_pollLogin()),
+      );
     } catch (error) {
       if (mounted) setState(() => _error = error);
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  Future<void> _pollLogin() async {
+    if (_polling || _checking || !mounted) return;
+    _polling = true;
+    try {
+      if (await widget.controller.xhs.isLoggedIn() && mounted) {
+        _loginPoll?.cancel();
+        Navigator.pop(context, true);
+      }
+    } catch (_) {
+      // The page can briefly transition after QR confirmation. The next poll
+      // will check the hydrated desktop page again.
+    } finally {
+      _polling = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _loginPoll?.cancel();
+    super.dispose();
   }
 
   Future<void> _finish() async {
@@ -591,6 +772,7 @@ class _XhsLoginScreenState extends State<XhsLoginScreen> {
       final loggedIn = await widget.controller.xhs.isLoggedIn();
       if (!mounted) return;
       if (loggedIn) {
+        _loginPoll?.cancel();
         Navigator.pop(context, true);
       } else {
         ScaffoldMessenger.of(
@@ -630,27 +812,27 @@ class _XhsLoginScreenState extends State<XhsLoginScreen> {
                     key: const Key('xhs-login-webview'),
                   ),
                 ),
-                if (_loading) const Center(child: CircularProgressIndicator()),
+                if (_loading)
+                  Positioned.fill(
+                    child: ColoredBox(
+                      color: Theme.of(context).scaffoldBackgroundColor,
+                      child: const AppLoadingView(
+                        title: '正在打开小红书登录',
+                        message: '登录状态将由系统 WebView 安全保存',
+                      ),
+                    ),
+                  ),
                 if (_error != null)
-                  Center(
-                    child: Card(
-                      margin: const EdgeInsets.all(24),
-                      child: Padding(
-                        padding: const EdgeInsets.all(18),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: <Widget>[
-                            Text(
-                              _error.toString(),
-                              textAlign: TextAlign.center,
-                            ),
-                            const SizedBox(height: 12),
-                            FilledButton(
-                              onPressed: _open,
-                              child: const Text('重试'),
-                            ),
-                          ],
-                        ),
+                  Positioned.fill(
+                    child: ColoredBox(
+                      color: Theme.of(context).scaffoldBackgroundColor,
+                      child: AppStateView(
+                        icon: Icons.cloud_off_outlined,
+                        iconColor: Theme.of(context).colorScheme.error,
+                        title: '小红书登录页加载失败',
+                        message: _error.toString(),
+                        actionLabel: '重新加载',
+                        onAction: _open,
                       ),
                     ),
                   ),
@@ -664,7 +846,10 @@ class _XhsLoginScreenState extends State<XhsLoginScreen> {
               child: Row(
                 children: <Widget>[
                   const Expanded(
-                    child: Text('请在上方系统 WebView 内完成登录。Cookie 会沿用系统持久化存储。'),
+                    child: Text(
+                      '上方是 PC 网页端，可扫码或验证码登录。'
+                      '登录成功后会自动返回，Cookie 仅保存在系统 WebView。',
+                    ),
                   ),
                   const SizedBox(width: 10),
                   FilledButton(
