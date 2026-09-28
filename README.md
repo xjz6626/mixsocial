@@ -1,6 +1,6 @@
 # mixsocial
 
-把百度贴吧和小红书放进同一个终端信息流的 Go TUI。支持推荐、热榜、关注、搜索、详情和评论查看；小红书还支持点赞、收藏、评论与回复。**不提供发布入口，公共接口里也没有发布方法。**
+把百度贴吧、小红书和知乎放进同一个终端信息流的 Go TUI。支持推荐、热榜、关注、搜索、详情和评论查看；小红书支持点赞、收藏、评论与回复，知乎支持点赞、评论与回复。**不提供发布入口，公共接口里也没有发布方法。**
 
 ## 当前实现
 
@@ -10,6 +10,7 @@
 - 信息流条目之间保留空行；详情页会自动使用 Kitty、iTerm2 或 Sixel 原生图片协议，不支持时回退到 ANSI 真彩半块，支持 JPEG、PNG、GIF 和 WebP。
 - 每次刷出列表后会用受控并发在后台缓存全部话题详情及每个话题最多 9 项媒体；详情缓存覆盖当前列表，媒体使用约 192 MiB 内存 LRU 和约 512 MiB 磁盘 LRU，切换话题不再重复下载和解码。
 - 百度贴吧：直接用 Go 编解码移动端 protobuf；支持官方个性推荐流、全站热议榜、按吧主题、主题楼层、百度 App 扫码登录、BDUSS 备用登录和已关注贴吧内容，无 Python 运行时。
+- 知乎：参考 Apache-2.0 的 `JimChengLin/zhihu-tui` 移植纯 Go 客户端，支持推荐、热榜、关注动态、搜索、问题/回答/文章/想法详情、评论树、点赞、评论、回复，以及知乎 App 扫码或 Cookie 登录；不依赖 Python sidecar。
 - Android 客户端补齐贴吧目录、吧内搜索与排序、详情/楼中楼分页、倒序/只看楼主、本地收藏与历史、离线信息流、阅读密度、图片缩放，以及按吧/关键词/媒体过滤；不提供按作者屏蔽。
 - Android 小红书使用 PC WebView 扫码/验证码登录，不再跳转 App；支持搜索筛选、完整评论/楼中楼加载、作者主页的笔记/收藏/点赞分页。
 - 小红书：安装脚本会把固定版本的 `xiaohongshu-mcp` 一并装到 `mixsocial` 旁边；`mixsocial` 启动和回收子进程，用户无需手动运行 sidecar。可在 TUI 内扫码登录，Cookie 和网页签名仍由成熟的上游实现管理。
@@ -53,12 +54,13 @@ go run ./cmd/mixsocial --demo
 ```bash
 go run ./cmd/mixsocial \
   --xhs=false \
+  --zhihu=false \
   --tieba-forums=golang,linux
 ```
 
 ## 登录
 
-`L` 登录当前来源：先用 `Tab` 切到贴吧或小红书；在“全部”来源中，也可以先选中该平台的一条内容再按 `L`。
+`L` 登录当前来源：先用 `Tab` 切到贴吧、小红书或知乎；在“全部”来源中，也可以先选中该平台的一条内容再按 `L`。
 
 ### 贴吧
 
@@ -92,13 +94,19 @@ mixsocial --xhs-managed=false
 
 上游 sidecar 自身带有发布路由，但 `mixsocial` 没有调用或展示这些功能；自动托管时服务只绑定 IPv4 loopback。
 
+### 知乎
+
+切到“知乎”后按大写 `L`，使用知乎 App 扫描终端二维码并确认。也可以按大写 `C`，粘贴自己在 `zhihu.com` 已登录会话中的完整 Cookie；至少需要 `z_c0`、`_xsrf` 和 `d_c0`。输入会被遮罩，不要把 Cookie 放到命令行、日志或仓库中。
+
+登录成功后，会话保存在用户配置目录下的 `mixsocial/zhihu-session.json`，文件权限为 `0600`、目录权限为 `0700`。热榜可匿名读取；搜索和部分公开详情在未登录时仍可能被风控，推荐、关注流和写操作需要有效登录会话。知乎接口和风控可能变化，读取请求只对网络错误、429、部分 5xx 和临时风控错误做有限重试，写操作不会自动重试。
+
 ## 频道语义
 
-| 频道 | 百度贴吧 | 小红书 |
-| --- | --- | --- |
-| 推荐 | 贴吧官方个性推荐流；设置 `--tieba-forums` 时才覆盖为指定吧聚合 | sidecar 提供的首页推荐流 |
-| 热榜 | 贴吧全站官方“热议话题”榜；接口失败时回退到常看 / 已关注吧的热门排序 | 对本次推荐样本按点赞、收藏、评论、分享加权排序；不是官方全站榜 |
-| 关注 | 登录账号实际关注的贴吧内容，单次最多读取前 8 个吧以控制频率 | 当前 sidecar 没有关注内容流路由，频道会明确显示能力提示，不用推荐流冒充 |
+| 频道 | 百度贴吧 | 小红书 | 知乎 |
+| --- | --- | --- | --- |
+| 推荐 | 贴吧官方个性推荐流；设置 `--tieba-forums` 时才覆盖为指定吧聚合 | sidecar 提供的首页推荐流 | 知乎首页推荐流 |
+| 热榜 | 贴吧全站官方“热议话题”榜；接口失败时回退到常看 / 已关注吧的热门排序 | 对本次推荐样本按点赞、收藏、评论、分享加权排序；不是官方全站榜 | 知乎创作者热榜 |
+| 关注 | 登录账号实际关注的贴吧内容，单次最多读取前 8 个吧以控制频率 | 当前 sidecar 没有关注内容流路由，频道会明确显示能力提示，不用推荐流冒充 | 登录账号的关注动态流 |
 
 小红书搜索接口支持“已关注”筛选，但它必须同时给出关键词，无法稳定组成完整关注首页，因此没有被冒充成关注流。
 
@@ -114,10 +122,11 @@ mixsocial --xhs-managed=false
 | `enter` | 打开详情 |
 | `/` | 搜索 |
 | `1` / `2` / `3` | 推荐 / 热榜 / 关注频道 |
-| `tab` / `shift+tab` | 全部、贴吧、小红书间切换 |
+| `tab` / `shift+tab` | 全部、贴吧、小红书、知乎间切换 |
 | `r` | 刷新 |
 | `L` | 使用当前来源的官方 App 扫码登录 |
 | `B` | 贴吧备用登录：遮罩导入 BDUSS |
+| `C` | 知乎备用登录：遮罩导入 `zhihu.com` Cookie |
 | `l` / `f` | 点赞 / 收藏，随后需按 `y` 确认 |
 | `c` | 评论，输入后需按 `y` 确认 |
 | `J` / `K` | 详情页选择评论 |
@@ -125,7 +134,7 @@ mixsocial --xhs-managed=false
 | `b` / `esc` | 从详情返回 |
 | `q` | 退出 |
 
-贴吧适配器当前是公开只读，因此其点赞、收藏、评论和回复会显示“不支持”。小红书交互需要有效登录状态。
+贴吧适配器当前是公开只读，因此其点赞、收藏、评论和回复会显示“不支持”。小红书和知乎交互需要有效登录状态。知乎没有可靠的“收藏到默认收藏夹”接口，因此不会把“关注问题”伪装成收藏操作。
 
 ## 配置
 
@@ -134,8 +143,10 @@ mixsocial --xhs-managed=false
 | `--demo` | `false` | 仅运行离线演示数据 |
 | `--tieba` | `true` | 启用贴吧 |
 | `--xhs` | `true` | 启用小红书 |
+| `--zhihu` | `true` | 启用知乎 |
 | `--tieba-forums` / `MIXSOCIAL_TIEBA_FORUMS` | 空 | 首页常看吧，逗号分隔 |
 | `--tieba-session` / `MIXSOCIAL_TIEBA_SESSION` | 用户配置目录 | 贴吧会话文件 |
+| `--zhihu-session` / `MIXSOCIAL_ZHIHU_SESSION` | 用户配置目录 | 知乎 Cookie 会话文件 |
 | `--browser` / `MIXSOCIAL_BROWSER` | 自动查找 | 扫码登录使用的 Chromium 路径；贴吧和小红书可共用安装脚本内置版本 |
 | `--xhs-endpoint` / `MIXSOCIAL_XHS_ENDPOINT` | `http://127.0.0.1:18060` | sidecar 地址 |
 | `--xhs-token` / `MIXSOCIAL_XHS_TOKEN` | 空 | sidecar Bearer 令牌 |
@@ -155,6 +166,6 @@ go vet -buildvcs=false ./...
 go build -buildvcs=false -o mixsocial ./cmd/mixsocial
 ```
 
-适配器和 TUI 之间只通过 `internal/source.Reader`、`Interactor` 以及统一领域模型通信。sidecar 的进程生命周期由 `internal/sidecar` 管理。
+适配器和 TUI 之间只通过 `internal/source.Reader`、`Interactor` 以及统一领域模型通信。贴吧和知乎使用纯 Go 适配器；sidecar 的进程生命周期由 `internal/sidecar` 管理。
 
 Android 与 TiebaLite 的功能取舍见 [TIEBALITE_PARITY.md](TIEBALITE_PARITY.md)，小红书阅读链路见 [XHS_PARITY.md](XHS_PARITY.md)，接口来源与许可证记录见 [THIRD_PARTY.md](THIRD_PARTY.md)。

@@ -7,6 +7,7 @@ type SourceID string
 const (
 	SourceTieba SourceID = "tieba"
 	SourceXHS   SourceID = "xhs"
+	SourceZhihu SourceID = "zhihu"
 	SourceDemo  SourceID = "demo"
 )
 
@@ -16,6 +17,8 @@ func (s SourceID) Label() string {
 		return "贴吧"
 	case SourceXHS:
 		return "小红书"
+	case SourceZhihu:
+		return "知乎"
 	case SourceDemo:
 		return "演示"
 	default:

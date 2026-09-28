@@ -1,0 +1,17 @@
+mixsocial
+
+This product includes software adapted from zhihu-tui:
+https://github.com/JimChengLin/zhihu-tui
+
+zhihu-tui is distributed under the Apache License 2.0. Its upstream NOTICE
+is reproduced below:
+
+zhihu-tui
+
+This project references portions of the public Zhihu API research from
+BAIGUANGMEI/zhihu-cli, including API endpoints, request parameters, and
+authentication flows:
+https://github.com/BAIGUANGMEI/zhihu-cli
+
+BAIGUANGMEI/zhihu-cli is distributed under the Apache License 2.0.
+This attribution is retained in accordance with that license.

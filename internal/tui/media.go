@@ -27,6 +27,26 @@ func mergeListMedia(detail *domain.Detail, listItem domain.Item) {
 	if detail == nil {
 		return
 	}
+	// Some upstream detail endpoints omit fields already present in the feed.
+	// Keep the richer list metadata, notably for unanswered Zhihu questions.
+	if detail.Title == "" || detail.Ref.Source == domain.SourceZhihu && detail.Title == "知乎问题" {
+		detail.Title = listItem.Title
+	}
+	if detail.Summary == "" {
+		detail.Summary = listItem.Summary
+	}
+	if detail.Body == "" {
+		detail.Body = listItem.Summary
+	}
+	if detail.Author.Name == "" {
+		detail.Author = listItem.Author
+	}
+	if detail.PublishedAt.IsZero() {
+		detail.PublishedAt = listItem.PublishedAt
+	}
+	if detail.Stats == (domain.Stats{}) {
+		detail.Stats = listItem.Stats
+	}
 	for _, summaryMedia := range listItem.Media {
 		merged := false
 		for index := range detail.Media {

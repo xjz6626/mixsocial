@@ -1,6 +1,15 @@
 # Third-party notes
 
-本项目没有复制下列项目的生成代码或业务代码，但在接口兼容性调研、字段映射和联调时参考或调用了它们。
+本文件记录项目在接口兼容性调研、字段映射、联调或代码移植中参考、调用及改编的第三方项目。每节会明确实际使用方式。
+
+## JimChengLin/zhihu-tui
+
+- Repository: https://github.com/JimChengLin/zhihu-tui
+- Revision adapted: `61f2fdf3d3a7aaa6a1f53a6a2a4ac59731993ab0`（2026-09-22）
+- License: Apache License 2.0（全文见 `LICENSES/Apache-2.0.txt`）
+- Usage: 知乎纯 Go HTTP 客户端、浏览器请求头、有限读取重试、扫码登录流程、Cookie 校验、推荐/关注/热榜/搜索/详情/评论及互动端点的基础实现来自或参考该项目。`internal/source/zhihu` 已按 mixsocial 的统一领域模型、并发方式、会话位置和安全边界重构；没有移植上游 TUI、发布、删除、通知或图片上传功能。上游 `NOTICE` 中对 `BAIGUANGMEI/zhihu-cli` 的 API 研究归属已保留在本仓库根目录的 `NOTICE`。
+
+知乎适配器调用的是非官方网页/客户端接口，与知乎无隶属关系。接口可能变化或触发风控；请控制频率，只访问自己有权访问的数据，并遵守知乎条款和当地法律。
 
 ## aiotieba
 

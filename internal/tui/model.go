@@ -34,6 +34,7 @@ var (
 	accent      = lipgloss.AdaptiveColor{Light: "#A43863", Dark: "#FF7AAE"}
 	tiebaColor  = lipgloss.AdaptiveColor{Light: "#2457A6", Dark: "#6FA8FF"}
 	xhsColor    = lipgloss.AdaptiveColor{Light: "#B4232C", Dark: "#FF6570"}
+	zhihuColor  = lipgloss.AdaptiveColor{Light: "#056DE8", Dark: "#58A6FF"}
 	mutedColor  = lipgloss.AdaptiveColor{Light: "#666666", Dark: "#969696"}
 	textColor   = lipgloss.AdaptiveColor{Light: "#202020", Dark: "#E8E8E8"}
 	borderColor = lipgloss.AdaptiveColor{Light: "#C9C9C9", Dark: "#4A4A4A"}
@@ -56,6 +57,7 @@ const (
 	inputComment
 	inputReply
 	inputTiebaCredential
+	inputZhihuCredential
 )
 
 type actionKind int
@@ -141,6 +143,7 @@ type loginStatusMsg struct {
 
 type credentialLoginMsg struct {
 	status source.LoginStatus
+	source domain.SourceID
 	err    error
 }
 
@@ -209,7 +212,7 @@ func New(mixed *source.Mixed, timeout time.Duration) Model {
 	}
 	input := textinput.New()
 	input.Prompt = "搜索 › "
-	input.Placeholder = "贴吧吧名 / 小红书关键词"
+	input.Placeholder = "贴吧吧名 / 小红书或知乎关键词"
 	input.CharLimit = 120
 
 	model := Model{
@@ -454,10 +457,10 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case credentialLoginMsg:
 		m.busy = false
 		if msg.err != nil {
-			m.status = "贴吧登录失败: " + msg.err.Error()
+			m.status = msg.source.Label() + "登录失败: " + msg.err.Error()
 			return m, nil
 		}
-		m.status = "贴吧登录成功"
+		m.status = msg.source.Label() + "登录成功"
 		if msg.status.Username != "" {
 			m.status += ": " + msg.status.Username
 		}
@@ -525,10 +528,14 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			action := pendingAction{kind: actionReply, ref: m.currentRef(), comment: comment.Ref, body: value}
 			m.askConfirmation(action)
 			return m, nil
-		case inputTiebaCredential:
+		case inputTiebaCredential, inputZhihuCredential:
+			target := domain.SourceTieba
+			if mode == inputZhihuCredential {
+				target = domain.SourceZhihu
+			}
 			m.busy = true
-			m.status = "正在校验贴吧 BDUSS…"
-			return m, m.credentialLoginCmd(value)
+			m.status = "正在校验" + target.Label() + "会话…"
+			return m, m.credentialLoginCmd(target, value)
 		}
 	}
 	var command tea.Cmd
@@ -611,6 +618,8 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startLogin()
 	case "B":
 		return m.startTiebaCredential()
+	case "C":
+		return m.startZhihuCredential()
 	case "1", "2", "3":
 		index := int(key[0] - '1')
 		if index < len(m.channels) {
@@ -819,6 +828,8 @@ func (m Model) renderLogin() string {
 	color := xhsColor
 	if m.loginSource == domain.SourceTieba {
 		color = tiebaColor
+	} else if m.loginSource == domain.SourceZhihu {
+		color = zhihuColor
 	}
 	title := lipgloss.NewStyle().Bold(true).Foreground(color).Render(m.loginSource.Label() + "扫码登录")
 	remaining := time.Until(m.loginExpiresAt).Round(time.Second)
@@ -1008,16 +1019,16 @@ func (m Model) loginStatusCmd() tea.Cmd {
 	}
 }
 
-func (m Model) credentialLoginCmd(credential string) tea.Cmd {
+func (m Model) credentialLoginCmd(id domain.SourceID, credential string) tea.Cmd {
 	return func() tea.Msg {
-		authenticator, ok := m.mixed.CredentialAuthenticator(domain.SourceTieba)
+		authenticator, ok := m.mixed.CredentialAuthenticator(id)
 		if !ok {
-			return credentialLoginMsg{err: fmt.Errorf("贴吧数据源不支持 BDUSS 登录")}
+			return credentialLoginMsg{source: id, err: fmt.Errorf("%s数据源不支持凭据登录", id.Label())}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), m.timeout)
 		defer cancel()
 		status, err := authenticator.LoginWithCredential(ctx, credential)
-		return credentialLoginMsg{status: status, err: err}
+		return credentialLoginMsg{status: status, source: id, err: err}
 	}
 }
 
@@ -1033,7 +1044,7 @@ func (m Model) startInput(mode inputMode) Model {
 	switch mode {
 	case inputSearch:
 		m.input.Prompt = "搜索 › "
-		m.input.Placeholder = "贴吧吧名 / 小红书关键词"
+		m.input.Placeholder = "贴吧吧名 / 小红书或知乎关键词"
 	case inputComment:
 		m.input.Prompt = "评论 › "
 		m.input.Placeholder = "输入评论，回车后仍需确认"
@@ -1046,6 +1057,12 @@ func (m Model) startInput(mode inputMode) Model {
 		m.input.EchoMode = textinput.EchoPassword
 		m.input.EchoCharacter = '•'
 		m.input.CharLimit = 1024
+	case inputZhihuCredential:
+		m.input.Prompt = "知乎 Cookie › "
+		m.input.Placeholder = "粘贴 z_c0=...; _xsrf=...; d_c0=..."
+		m.input.EchoMode = textinput.EchoPassword
+		m.input.EchoCharacter = '•'
+		m.input.CharLimit = 8192
 	}
 	m.input.Focus()
 	return m
@@ -1062,7 +1079,10 @@ func (m Model) startLogin() (tea.Model, tea.Cmd) {
 	if target == domain.SourceTieba {
 		return m.startTiebaCredential()
 	}
-	m.status = "请先用 Tab 选择贴吧或小红书来源，再按 L 登录"
+	if target == domain.SourceZhihu {
+		return m.startZhihuCredential()
+	}
+	m.status = "请先用 Tab 选择贴吧、小红书或知乎来源，再按 L 登录"
 	return m, nil
 }
 
@@ -1079,9 +1099,25 @@ func (m Model) startTiebaCredential() (tea.Model, tea.Cmd) {
 	return m.startInput(inputTiebaCredential), textinput.Blink
 }
 
+func (m Model) startZhihuCredential() (tea.Model, tea.Cmd) {
+	if _, ok := m.mixed.CredentialAuthenticator(domain.SourceZhihu); !ok {
+		m.status = "知乎数据源不支持 Cookie 登录"
+		return m, nil
+	}
+	if target := m.loginTarget(); target != "" && target != domain.SourceZhihu {
+		m.status = "请先用 Tab 切到知乎来源，再按 C 导入 Cookie"
+		return m, nil
+	}
+	m.status = "请粘贴 zhihu.com Cookie 中的 z_c0、_xsrf 和 d_c0；输入会被遮罩"
+	return m.startInput(inputZhihuCredential), textinput.Blink
+}
+
 func loginAppName(id domain.SourceID) string {
 	if id == domain.SourceTieba {
 		return "百度 App"
+	}
+	if id == domain.SourceZhihu {
+		return "知乎 App"
 	}
 	return "小红书 App"
 }
@@ -1111,6 +1147,8 @@ func (m Model) listHelp() string {
 		help += "  L 贴吧扫码  B 导入BDUSS"
 	case domain.SourceXHS:
 		help += "  L 小红书扫码"
+	case domain.SourceZhihu:
+		help += "  L 知乎扫码  C 导入Cookie"
 	default:
 		help += "  L 登录"
 	}
@@ -1131,6 +1169,21 @@ func (m *Model) stopInput() {
 }
 
 func (m *Model) askConfirmation(action pendingAction) {
+	want := source.Capability(0)
+	switch action.kind {
+	case actionLike:
+		want = source.CapabilityLike
+	case actionFavorite:
+		want = source.CapabilityFavorite
+	case actionComment:
+		want = source.CapabilityComment
+	case actionReply:
+		want = source.CapabilityReply
+	}
+	if want != 0 && !m.mixed.Supports(action.ref.Source, want) {
+		m.status = action.ref.Source.Label() + " 不支持此操作"
+		return
+	}
 	if _, ok := m.mixed.Interactor(action.ref.Source); !ok {
 		m.status = action.ref.Source.Label() + " 当前仅支持读取"
 		return
@@ -1200,6 +1253,8 @@ func sourceBadge(id domain.SourceID) string {
 		color = tiebaColor
 	} else if id == domain.SourceXHS {
 		color = xhsColor
+	} else if id == domain.SourceZhihu {
+		color = zhihuColor
 	}
 	return lipgloss.NewStyle().Foreground(color).Bold(true).Render("[" + id.Label() + "]")
 }

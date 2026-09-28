@@ -94,6 +94,11 @@ func (m *Mixed) Interactor(id domain.SourceID) (Interactor, bool) {
 	return interactor, ok
 }
 
+func (m *Mixed) Supports(id domain.SourceID, capability Capability) bool {
+	reader, ok := m.readers[id]
+	return ok && reader.Capabilities().Has(capability)
+}
+
 func (m *Mixed) RelationshipInteractor(id domain.SourceID) (RelationshipInteractor, bool) {
 	reader, ok := m.readers[id]
 	if !ok {

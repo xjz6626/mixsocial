@@ -17,6 +17,7 @@ import (
 	"github.com/xjz6626/mixsocial/internal/source/demo"
 	"github.com/xjz6626/mixsocial/internal/source/tieba"
 	"github.com/xjz6626/mixsocial/internal/source/xhs"
+	"github.com/xjz6626/mixsocial/internal/source/zhihu"
 	"github.com/xjz6626/mixsocial/internal/tui"
 )
 
@@ -25,8 +26,10 @@ func main() {
 		demoMode      = flag.Bool("demo", false, "use offline demo data only")
 		useTieba      = flag.Bool("tieba", true, "enable Baidu Tieba")
 		useXHS        = flag.Bool("xhs", true, "enable Xiaohongshu")
+		useZhihu      = flag.Bool("zhihu", true, "enable Zhihu")
 		forums        = flag.String("tieba-forums", envOr("MIXSOCIAL_TIEBA_FORUMS", ""), "comma-separated Tieba home forums")
 		tiebaSession  = flag.String("tieba-session", os.Getenv("MIXSOCIAL_TIEBA_SESSION"), "Tieba session file (user config directory by default)")
+		zhihuSession  = flag.String("zhihu-session", os.Getenv("MIXSOCIAL_ZHIHU_SESSION"), "Zhihu session file (user config directory by default)")
 		browserPath   = flag.String("browser", os.Getenv("MIXSOCIAL_BROWSER"), "Chromium path for embedded login (auto-detected by default)")
 		xhsURL        = flag.String("xhs-endpoint", envOr("MIXSOCIAL_XHS_ENDPOINT", "http://127.0.0.1:18060"), "xiaohongshu-mcp HTTP endpoint")
 		xhsToken      = flag.String("xhs-token", os.Getenv("MIXSOCIAL_XHS_TOKEN"), "optional sidecar bearer token")
@@ -92,6 +95,17 @@ func main() {
 			readers = append(readers, xhs.New(xhs.Config{
 				Client: client, Endpoint: *xhsURL, Token: *xhsToken, SessionPath: xhsSessionPath, GuardSession: *xhsManaged,
 			}))
+		}
+		if *useZhihu {
+			sessionPath := strings.TrimSpace(*zhihuSession)
+			if sessionPath == "" {
+				var pathErr error
+				sessionPath, pathErr = statePath("zhihu-session.json")
+				if pathErr != nil {
+					fmt.Fprintf(os.Stderr, "mixsocial: resolve Zhihu session path: %v (login will not persist)\n", pathErr)
+				}
+			}
+			readers = append(readers, zhihu.New(zhihu.Config{Client: client, SessionPath: sessionPath}))
 		}
 	}
 	if len(readers) == 0 {

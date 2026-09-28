@@ -35,10 +35,16 @@ func (f mediaRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, er
 type credentialDemo struct {
 	*demo.Provider
 	credential string
+	id         domain.SourceID
 }
 
-func (a *credentialDemo) ID() domain.SourceID { return domain.SourceTieba }
-func (a *credentialDemo) Name() string        { return "test tieba" }
+func (a *credentialDemo) ID() domain.SourceID {
+	if a.id != "" {
+		return a.id
+	}
+	return domain.SourceTieba
+}
+func (a *credentialDemo) Name() string { return "test credential source" }
 func (a *credentialDemo) LoginStatus(context.Context) (source.LoginStatus, error) {
 	return source.LoginStatus{LoggedIn: a.credential != "", Username: "bob"}, nil
 }
@@ -227,10 +233,34 @@ func TestTiebaCredentialLoginIsMasked(t *testing.T) {
 	}
 }
 
+func TestZhihuCredentialLoginIsMasked(t *testing.T) {
+	provider := &credentialDemo{Provider: demo.New(), id: domain.SourceZhihu}
+	model := New(source.NewMixed(provider), time.Second)
+	model.filterIndex = 1
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'C'}})
+	model = updated.(Model)
+	if command == nil || model.inputMode != inputZhihuCredential || model.input.EchoMode != textinput.EchoPassword {
+		t.Fatalf("Zhihu credential input was not opened and masked: %+v", model)
+	}
+	cookie := "z_c0=zc; _xsrf=xs; d_c0=dc"
+	model.input.SetValue(cookie)
+	updated, login := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if login == nil {
+		t.Fatal("Zhihu credential was not submitted")
+	}
+	updated, refresh := model.Update(login())
+	model = updated.(Model)
+	if provider.credential != cookie || !strings.Contains(model.status, "知乎登录成功") || refresh == nil {
+		t.Fatalf("Zhihu credential login was not applied: status=%q credential=%q", model.status, provider.credential)
+	}
+}
+
 func TestSourceSpecificLoginHelp(t *testing.T) {
 	provider := &credentialDemo{Provider: demo.New()}
 	xhs := authDemo{Provider: demo.New()}
-	model := New(source.NewMixed(provider, xhs), time.Second)
+	zhihu := &credentialDemo{Provider: demo.New(), id: domain.SourceZhihu}
+	model := New(source.NewMixed(provider, xhs, zhihu), time.Second)
 	model.filterIndex = 1
 	if help := model.listHelp(); !strings.Contains(help, "贴吧扫码") || !strings.Contains(help, "BDUSS") {
 		t.Fatalf("Tieba help = %q", help)
@@ -238,6 +268,10 @@ func TestSourceSpecificLoginHelp(t *testing.T) {
 	model.filterIndex = 2
 	if help := model.listHelp(); !strings.Contains(help, "小红书扫码") || strings.Contains(help, "BDUSS") {
 		t.Fatalf("XHS help = %q", help)
+	}
+	model.filterIndex = 3
+	if help := model.listHelp(); !strings.Contains(help, "知乎扫码") || !strings.Contains(help, "Cookie") || strings.Contains(help, "BDUSS") {
+		t.Fatalf("Zhihu help = %q", help)
 	}
 }
 
