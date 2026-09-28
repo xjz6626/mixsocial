@@ -264,6 +264,22 @@ func (p *Provider) fetchComments(ctx context.Context, kind, id, cursor string) (
 	return commentPageFromResponse(response, kind, id, cursor), nil
 }
 
+// Comments returns one root-comment page for clients that render detail
+// pagination independently from the initial content request (notably mobile).
+func (p *Provider) Comments(ctx context.Context, ref domain.Ref, cursor string) (domain.CommentPage, error) {
+	if ref.Source != domain.SourceZhihu || strings.TrimSpace(ref.ID) == "" {
+		return domain.CommentPage{}, fmt.Errorf("知乎内容引用无效")
+	}
+	kind := normalizedKind(ref.Token)
+	if kind == "" {
+		kind = kindFromURL(ref.URL)
+	}
+	if kind == "" {
+		kind = "answer"
+	}
+	return p.fetchComments(ctx, kind, ref.ID, cursor)
+}
+
 func (p *Provider) Like(ctx context.Context, ref domain.Ref, value bool) error {
 	kind := normalizedKind(ref.Token)
 	if kind == "question" || kind == "" {

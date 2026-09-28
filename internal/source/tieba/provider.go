@@ -40,6 +40,7 @@ type Config struct {
 	LoginURL     string
 	FollowURL    string
 	HotURL       string
+	ProfileURL   string
 	BrowserPath  string
 	SessionPath  string
 }
@@ -57,6 +58,7 @@ type Provider struct {
 	loginURL     string
 	followURL    string
 	hotURL       string
+	profileURL   string
 	browserPath  string
 	sessionPath  string
 
@@ -97,7 +99,8 @@ func New(config Config) *Provider {
 		}
 	}
 	p := &Provider{
-		client: client, clientID: fmt.Sprintf("wappc_%d_0", time.Now().UnixMilli()),
+		profileURL: config.ProfileURL,
+		client:     client, clientID: fmt.Sprintf("wappc_%d_0", time.Now().UnixMilli()),
 		forums: forums, pageSize: pageSize, recommendURL: config.RecommendURL, frsURL: frsURL, pbURL: pbURL, floorURL: floorURL,
 		searchURL: config.SearchURL,
 		loginURL:  config.LoginURL, followURL: config.FollowURL, hotURL: config.HotURL,
@@ -555,7 +558,15 @@ func decodePostsResponse(body []byte, ref domain.Ref, pageNumber int) (domain.De
 	posts := allBytes(data, 6)
 	var detail domain.Detail
 	detail.Item = item
+	detail.CurrentPage = pageNumber
 	if pageFields, parseErr := parseFields(firstBytes(data, 3)); parseErr == nil {
+		// Page schema: current_page = 3, total_page = 5, has_more = 6.
+		if current := firstUint(pageFields, 3); current > 0 && current <= 100000 {
+			detail.CurrentPage = int(current)
+		}
+		if total := firstUint(pageFields, 5); total > 0 && total <= 100000 {
+			detail.TotalPages = int(total)
+		}
 		detail.HasMore = firstUint(pageFields, 6) != 0
 		if detail.HasMore {
 			detail.NextCursor = strconv.Itoa(pageNumber + 1)
@@ -775,8 +786,8 @@ func decodeAuthor(encoded []byte) (domain.Author, error) {
 	portrait := firstString(fields, 5)
 	id := strconv.FormatUint(firstUint(fields, 2), 10)
 	profile := domain.ProfileRef{Source: domain.SourceTieba, ID: id}
-	if name != "" {
-		profile.URL = "https://tieba.baidu.com/home/main?un=" + url.QueryEscape(name)
+	if username := firstString(fields, 3); username != "" {
+		profile.URL = "https://tieba.baidu.com/home/main?un=" + url.QueryEscape(username)
 	}
 	return domain.Author{Ref: profile, ID: id, Name: name, Avatar: tiebaAvatarURL(portrait)}, nil
 }

@@ -6,6 +6,12 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'app_controller.dart';
 import 'design_system.dart';
 import 'forum_screen.dart';
+import 'diagnostics_screen.dart';
+import 'source_diagnostics.dart';
+import 'models.dart';
+import 'media_cache_screen.dart';
+import 'library_manager_screen.dart';
+import 'profile_screen.dart';
 import 'reader_tools_screen.dart';
 
 class AccountScreen extends StatefulWidget {
@@ -21,6 +27,16 @@ class _AccountScreenState extends State<AccountScreen> {
   bool _checking = true;
   bool _xhsLoggedIn = false;
   bool _tiebaCredentialSaved = false;
+  bool _zhihuCredentialSaved = false;
+  TiebaSessionStatus _tiebaStatus = const TiebaSessionStatus(
+    TiebaSessionState.signedOut,
+  );
+  TiebaSessionStatus _zhihuStatus = const TiebaSessionStatus(
+    TiebaSessionState.signedOut,
+  );
+  int _statusGeneration = 0;
+  bool _openingXhsProfile = false;
+  bool _openingTiebaProfile = false;
   Object? _xhsStatusError;
 
   @override
@@ -30,22 +46,93 @@ class _AccountScreenState extends State<AccountScreen> {
   }
 
   Future<void> _refreshStatus() async {
+    final generation = ++_statusGeneration;
     if (mounted) setState(() => _checking = true);
-    final tiebaSaved = await widget.controller.tieba.hasCredential();
+    var tiebaSaved = _tiebaCredentialSaved;
+    var tiebaStatus = _tiebaStatus;
+    try {
+      tiebaSaved = await widget.controller.tieba.hasCredential();
+      tiebaStatus = tiebaSaved
+          ? widget.controller.tieba.sessionStatus
+          : const TiebaSessionStatus(TiebaSessionState.signedOut);
+      if (tiebaSaved && tiebaStatus.state == TiebaSessionState.signedOut) {
+        tiebaStatus = const TiebaSessionStatus(TiebaSessionState.saved);
+      }
+    } catch (error) {
+      sourceDiagnostics.record(SourceId.tieba, '登录验证', error);
+      tiebaStatus = TiebaSessionStatus.fromFailure(error);
+    }
     var xhsLoggedIn = false;
     Object? xhsError;
     try {
       xhsLoggedIn = await widget.controller.xhs.isLoggedIn();
     } catch (error) {
-      xhsError = error;
+      sourceDiagnostics.record(SourceId.xhs, '登录验证', error);
+      xhsError = SourceFailure.from(error).message;
     }
-    if (!mounted) return;
+    var zhihuSaved = _zhihuCredentialSaved;
+    var zhihuStatus = _zhihuStatus;
+    try {
+      zhihuSaved = await widget.controller.zhihu.hasCredential();
+      zhihuStatus = zhihuSaved
+          ? widget.controller.zhihu.sessionStatus
+          : const TiebaSessionStatus(TiebaSessionState.signedOut);
+      if (zhihuSaved && zhihuStatus.state == TiebaSessionState.signedOut) {
+        zhihuStatus = const TiebaSessionStatus(TiebaSessionState.saved);
+      }
+    } catch (error) {
+      sourceDiagnostics.record(SourceId.zhihu, '登录验证', error);
+      zhihuStatus = TiebaSessionStatus.fromFailure(error);
+    }
+    if (!mounted || generation != _statusGeneration) return;
     setState(() {
       _checking = false;
       _tiebaCredentialSaved = tiebaSaved;
+      _tiebaStatus = tiebaStatus;
       _xhsLoggedIn = xhsLoggedIn;
       _xhsStatusError = xhsError;
+      _zhihuCredentialSaved = zhihuSaved;
+      _zhihuStatus = zhihuStatus;
     });
+  }
+
+  Future<void> _verifyTieba() async {
+    if (_checking) return;
+    final generation = ++_statusGeneration;
+    setState(() => _checking = true);
+    try {
+      final status = await widget.controller.tieba.checkLogin();
+      if (mounted && generation == _statusGeneration)
+        setState(() => _tiebaStatus = status);
+    } catch (error) {
+      sourceDiagnostics.record(SourceId.tieba, '登录验证', error);
+      if (mounted && generation == _statusGeneration)
+        setState(() => _tiebaStatus = TiebaSessionStatus.fromFailure(error));
+    } finally {
+      if (mounted && generation == _statusGeneration)
+        setState(() => _checking = false);
+    }
+  }
+
+  Future<void> _verifyZhihu() async {
+    if (_checking) return;
+    final generation = ++_statusGeneration;
+    setState(() => _checking = true);
+    try {
+      final status = await widget.controller.zhihu.checkLogin();
+      if (mounted && generation == _statusGeneration) {
+        setState(() => _zhihuStatus = status);
+      }
+    } catch (error) {
+      sourceDiagnostics.record(SourceId.zhihu, '登录验证', error);
+      if (mounted && generation == _statusGeneration) {
+        setState(() => _zhihuStatus = TiebaSessionStatus.fromFailure(error));
+      }
+    } finally {
+      if (mounted && generation == _statusGeneration) {
+        setState(() => _checking = false);
+      }
+    }
   }
 
   Future<void> _openXhsLogin() async {
@@ -73,8 +160,63 @@ class _AccountScreenState extends State<AccountScreen> {
       ),
     );
     if (!mounted || loggedIn != true) return;
-    setState(() => _tiebaCredentialSaved = true);
+    setState(() {
+      _tiebaCredentialSaved = true;
+      _tiebaStatus = widget.controller.tieba.sessionStatus;
+    });
     await _refreshFeed();
+  }
+
+  Future<void> _openZhihuLogin() async {
+    final loggedIn = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute<bool>(
+        builder: (_) => ZhihuLoginScreen(controller: widget.controller),
+      ),
+    );
+    if (!mounted || loggedIn != true) return;
+    setState(() {
+      _zhihuCredentialSaved = true;
+      _zhihuStatus = widget.controller.zhihu.sessionStatus;
+    });
+    await _refreshFeed();
+  }
+
+  Future<void> _openXhsProfile() async {
+    if (_checking || _openingXhsProfile || !_xhsLoggedIn) return;
+    setState(() => _openingXhsProfile = true);
+    try {
+      final author = await widget.controller.xhs.currentProfile();
+      if (!mounted) return;
+      await Navigator.push<void>(
+        context,
+        MaterialPageRoute<void>(
+          builder: (_) => ProfileScreen(
+            controller: widget.controller,
+            author: author,
+            isOwnProfile: true,
+          ),
+        ),
+      );
+    } catch (error) {
+      if (mounted) _showMessage(error.toString(), error: true);
+    } finally {
+      if (mounted) setState(() => _openingXhsProfile = false);
+    }
+  }
+
+  Future<void> _openTiebaProfile() async {
+    if (_checking || _openingTiebaProfile) return;
+    setState(() => _openingTiebaProfile = true);
+    try {
+      final author = await widget.controller.tieba.currentProfile();
+      if (!mounted) return;
+      await Navigator.push<void>(context, MaterialPageRoute<void>(builder: (_) => ProfileScreen(controller: widget.controller, author: author, isOwnProfile: true)));
+    } catch (error) {
+      if (mounted) _showMessage(SourceFailure.from(error).message, error: true);
+    } finally {
+      if (mounted) setState(() { _openingTiebaProfile = false; _tiebaStatus = widget.controller.tieba.sessionStatus; });
+    }
   }
 
   Future<void> _importBduss() async {
@@ -143,9 +285,91 @@ class _AccountScreenState extends State<AccountScreen> {
     if (credential == null || !mounted) return;
     await _withProgress(() async {
       await widget.controller.tieba.loginWithCredential(credential);
-      if (mounted) setState(() => _tiebaCredentialSaved = true);
+      if (mounted)
+        setState(() {
+          _tiebaCredentialSaved = true;
+          _tiebaStatus = widget.controller.tieba.sessionStatus;
+        });
       await _refreshFeed();
       if (mounted) _showMessage('贴吧登录成功，BDUSS 已保存到系统安全存储');
+    });
+  }
+
+  Future<void> _importZhihuCookie() async {
+    final textController = TextEditingController();
+    var hidden = true;
+    final credential = await showDialog<String>(
+      context: context,
+      builder: (BuildContext context) => StatefulBuilder(
+        builder: (BuildContext context, StateSetter setDialogState) =>
+            AlertDialog(
+              title: const Text('安全导入知乎 Cookie'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  const Text(
+                    '粘贴 zhihu.com 登录会话的完整 Cookie；至少需要 z_c0、_xsrf 和 d_c0。导入前会由知乎接口校验。',
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    key: const Key('zhihu-cookie-input'),
+                    controller: textController,
+                    autofocus: true,
+                    obscureText: hidden,
+                    enableSuggestions: false,
+                    autocorrect: false,
+                    keyboardType: TextInputType.visiblePassword,
+                    decoration: InputDecoration(
+                      labelText: '知乎 Cookie',
+                      border: const OutlineInputBorder(),
+                      suffixIcon: IconButton(
+                        tooltip: hidden ? '显示' : '隐藏',
+                        onPressed: () =>
+                            setDialogState(() => hidden = !hidden),
+                        icon: Icon(
+                          hidden
+                              ? Icons.visibility_outlined
+                              : Icons.visibility_off_outlined,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    '凭据仅进入系统安全存储，不写入普通数据库。',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+              actions: <Widget>[
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    final value = textController.text.trim();
+                    if (value.isNotEmpty) Navigator.pop(context, value);
+                  },
+                  child: const Text('校验并保存'),
+                ),
+              ],
+            ),
+      ),
+    );
+    textController.dispose();
+    if (credential == null || !mounted) return;
+    await _withProgress(() async {
+      await widget.controller.zhihu.loginWithCredential(credential);
+      if (mounted) {
+        setState(() {
+          _zhihuCredentialSaved = true;
+          _zhihuStatus = widget.controller.zhihu.sessionStatus;
+        });
+      }
+      await _refreshFeed();
+      if (mounted) _showMessage('知乎登录成功，Cookie 已保存到系统安全存储');
     });
   }
 
@@ -170,7 +394,40 @@ class _AccountScreenState extends State<AccountScreen> {
     if (confirmed != true || !mounted) return;
     await _withProgress(() async {
       await widget.controller.tieba.logout();
-      if (mounted) setState(() => _tiebaCredentialSaved = false);
+      if (mounted) setState(() { _tiebaCredentialSaved = false; _tiebaStatus = const TiebaSessionStatus(TiebaSessionState.signedOut); });
+      await _refreshFeed();
+    });
+  }
+
+  Future<void> _logoutZhihu() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('退出知乎登录？'),
+        content: const Text('这会从本机安全存储中删除知乎 Cookie。系统 WebView 中的网页登录状态不会被清除。'),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('退出登录'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _withProgress(() async {
+      await widget.controller.zhihu.logout();
+      if (mounted) {
+        setState(() {
+          _zhihuCredentialSaved = false;
+          _zhihuStatus = const TiebaSessionStatus(
+            TiebaSessionState.signedOut,
+          );
+        });
+      }
       await _refreshFeed();
     });
   }
@@ -220,19 +477,44 @@ class _AccountScreenState extends State<AccountScreen> {
           ? '未检测到登录状态'
           : '暂时无法检查登录状态',
       detail: _xhsStatusError?.toString(),
-      action: FilledButton.icon(
-        onPressed: _checking ? null : _openXhsLogin,
-        icon: const Icon(Icons.language),
-        label: Text(_xhsLoggedIn ? '打开登录页' : '使用 WebView 登录'),
+      action: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          FilledButton.icon(
+            onPressed: _checking || _openingXhsProfile ? null : _openXhsLogin,
+            icon: const Icon(Icons.language),
+            label: Text(_xhsLoggedIn ? '打开登录页' : '使用 WebView 登录'),
+          ),
+          if (_xhsLoggedIn) ...<Widget>[
+            const SizedBox(height: AppSpacing.sm),
+            OutlinedButton.icon(
+              key: const Key('xhs-current-profile'),
+              onPressed: _checking || _openingXhsProfile
+                  ? null
+                  : _openXhsProfile,
+              icon: _openingXhsProfile
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.person_outline),
+              label: Text(_openingXhsProfile ? '正在读取账号…' : '我的小红书主页'),
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            const Text('查看平台笔记、收藏和点赞，与本地收藏分开。'),
+          ],
+        ],
       ),
     );
     final tiebaCard = _AccountCard(
       color: const Color(0xff3478f6),
       icon: Icons.forum_outlined,
       title: '百度贴吧',
-      connected: _tiebaCredentialSaved,
-      status: _tiebaCredentialSaved ? '已登录并保存 BDUSS' : '尚未登录',
-      detail: _tiebaCredentialSaved
+      connected: _tiebaStatus.verified,
+      status: _tiebaStatus.label,
+      detail: _tiebaStatus.message.isNotEmpty
+          ? _tiebaStatus.message
+          : _tiebaCredentialSaved
           ? '凭据将在应用启动时从 Android Keystore 恢复。'
           : '推荐在百度官方网页中完成登录；也可以安全导入已有 BDUSS。',
       action: Column(
@@ -242,6 +524,18 @@ class _AccountScreenState extends State<AccountScreen> {
             onPressed: _checking ? null : _openTiebaLogin,
             icon: const Icon(Icons.language),
             label: Text(_tiebaCredentialSaved ? '重新网页登录' : '使用 WebView 登录'),
+          ),
+          if (_tiebaCredentialSaved)
+            TextButton.icon(
+              key: const Key('tieba-verify-login'),
+              onPressed: _checking ? null : _verifyTieba,
+              icon: const Icon(Icons.verified_user_outlined),
+              label: const Text('重新验证登录'),
+            ),
+          if (_tiebaCredentialSaved) OutlinedButton.icon(
+            key: const Key('tieba-current-profile'),
+            onPressed: _checking || _openingTiebaProfile ? null : _openTiebaProfile,
+            icon: const Icon(Icons.person_outline), label: Text(_openingTiebaProfile ? '正在读取账号…' : '我的贴吧主页'),
           ),
           const SizedBox(height: AppSpacing.sm),
           Row(
@@ -258,6 +552,57 @@ class _AccountScreenState extends State<AccountScreen> {
                 IconButton.filledTonal(
                   tooltip: '退出登录',
                   onPressed: _checking ? null : _logoutTieba,
+                  icon: const Icon(Icons.logout),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+    final zhihuCard = _AccountCard(
+      color: const Color(0xff056de8),
+      icon: Icons.question_answer_outlined,
+      title: '知乎',
+      connected: _zhihuStatus.verified,
+      status: _zhihuStatus.label,
+      detail: _zhihuStatus.message.isNotEmpty
+          ? _zhihuStatus.message
+          : _zhihuCredentialSaved
+          ? 'Cookie 将在应用启动时从 Android Keystore 恢复。'
+          : '可在知乎官方网页中登录，或安全导入已有 Cookie。',
+      action: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          FilledButton.icon(
+            key: const Key('zhihu-web-login'),
+            onPressed: _checking ? null : _openZhihuLogin,
+            icon: const Icon(Icons.language),
+            label: Text(_zhihuCredentialSaved ? '重新网页登录' : '使用 WebView 登录'),
+          ),
+          if (_zhihuCredentialSaved)
+            TextButton.icon(
+              key: const Key('zhihu-verify-login'),
+              onPressed: _checking ? null : _verifyZhihu,
+              icon: const Icon(Icons.verified_user_outlined),
+              label: const Text('重新验证登录'),
+            ),
+          const SizedBox(height: AppSpacing.sm),
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: OutlinedButton.icon(
+                  key: const Key('zhihu-import-cookie'),
+                  onPressed: _checking ? null : _importZhihuCookie,
+                  icon: const Icon(Icons.key_outlined),
+                  label: Text(_zhihuCredentialSaved ? '更换 Cookie' : '导入 Cookie'),
+                ),
+              ),
+              if (_zhihuCredentialSaved) ...<Widget>[
+                const SizedBox(width: AppSpacing.sm),
+                IconButton.filledTonal(
+                  tooltip: '退出知乎登录',
+                  onPressed: _checking ? null : _logoutZhihu,
                   icon: const Icon(Icons.logout),
                 ),
               ],
@@ -305,12 +650,16 @@ class _AccountScreenState extends State<AccountScreen> {
                               Expanded(child: xhsCard),
                               const SizedBox(width: AppSpacing.lg),
                               Expanded(child: tiebaCard),
+                              const SizedBox(width: AppSpacing.lg),
+                              Expanded(child: zhihuCard),
                             ],
                           )
                         else ...<Widget>[
                           xhsCard,
                           const SizedBox(height: AppSpacing.md),
                           tiebaCard,
+                          const SizedBox(height: AppSpacing.md),
+                          zhihuCard,
                         ],
                         const SizedBox(height: AppSpacing.xl),
                         Text(
@@ -321,6 +670,14 @@ class _AccountScreenState extends State<AccountScreen> {
                         Card(
                           child: Column(
                             children: <Widget>[
+                              ListTile(leading: const Icon(Icons.folder_outlined), title: const Text('收藏夹与标签'),
+                                subtitle: const Text('批量整理、导入导出；不改变平台收藏'),
+                                onTap: () => Navigator.push<void>(context, MaterialPageRoute<void>(builder: (_) => LibraryManagerScreen(controller: widget.controller)))),
+                              ListTile(leading: const Icon(Icons.monitor_heart_outlined), title: const Text('连接诊断'),
+                                subtitle: const Text('仅保留脱敏的连接错误类别'),
+                                onTap: () => Navigator.push<void>(context, MaterialPageRoute<void>(builder: (_) => const DiagnosticsScreen()))),
+                              ListTile(leading: const Icon(Icons.storage_outlined), title: const Text('图片缓存'),
+                                onTap: () => Navigator.push<void>(context, MaterialPageRoute<void>(builder: (_) => const MediaCacheScreen()))),
                               ListTile(
                                 leading: const Icon(Icons.forum_outlined),
                                 title: const Text('贴吧目录'),
@@ -354,6 +711,7 @@ class _AccountScreenState extends State<AccountScreen> {
                               ListTile(
                                 leading: const Icon(Icons.bookmarks_outlined),
                                 title: const Text('本地收藏'),
+                                subtitle: const Text('本机保存，可搜索和按平台筛选'),
                                 trailing: const Icon(Icons.chevron_right),
                                 onTap: () => Navigator.push<void>(
                                   context,
@@ -361,6 +719,22 @@ class _AccountScreenState extends State<AccountScreen> {
                                     builder: (_) => LocalLibraryScreen(
                                       controller: widget.controller,
                                       kind: LocalLibraryKind.saved,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const Divider(),
+                              ListTile(
+                                leading: const Icon(Icons.schedule_outlined),
+                                title: const Text('稍后阅读'),
+                                subtitle: const Text('暂存想读的帖子，随时整理'),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () => Navigator.push<void>(
+                                  context,
+                                  MaterialPageRoute<void>(
+                                    builder: (_) => LocalLibraryScreen(
+                                      controller: widget.controller,
+                                      kind: LocalLibraryKind.readLater,
                                     ),
                                   ),
                                 ),
@@ -394,7 +768,7 @@ class _AccountScreenState extends State<AccountScreen> {
                                 const SizedBox(width: AppSpacing.md),
                                 Expanded(
                                   child: Text(
-                                    'Cookie 和 BDUSS 不进入信息流、详情或普通缓存数据库。请勿把 BDUSS 发给他人。',
+                                    'Cookie 和 BDUSS 不进入信息流、详情或普通缓存数据库。它们等同登录凭据，请勿发给他人。',
                                     style: Theme.of(
                                       context,
                                     ).textTheme.bodyMedium,
@@ -607,6 +981,198 @@ class _TiebaLoginScreenState extends State<TiebaLoginScreen> {
 bool _isAllowedBaiduPage(Uri uri) =>
     uri.scheme == 'https' &&
     (uri.host == 'baidu.com' || uri.host.endsWith('.baidu.com'));
+
+class ZhihuLoginScreen extends StatefulWidget {
+  const ZhihuLoginScreen({super.key, required this.controller});
+
+  final MixsocialController controller;
+
+  @override
+  State<ZhihuLoginScreen> createState() => _ZhihuLoginScreenState();
+}
+
+class _ZhihuLoginScreenState extends State<ZhihuLoginScreen> {
+  static final _loginUri = Uri.parse(
+    'https://www.zhihu.com/signin?next=%2F',
+  );
+
+  WebViewController? _webViewController;
+  bool _loading = true;
+  bool _checking = false;
+  Object? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_prepare());
+  }
+
+  Future<void> _prepare() async {
+    try {
+      final controller = WebViewController();
+      await controller.setJavaScriptMode(JavaScriptMode.unrestricted);
+      await controller.setNavigationDelegate(
+        NavigationDelegate(
+          onNavigationRequest: (NavigationRequest request) {
+            final uri = Uri.tryParse(request.url);
+            return uri != null && _isAllowedZhihuPage(uri)
+                ? NavigationDecision.navigate
+                : NavigationDecision.prevent;
+          },
+          onPageStarted: (_) {
+            if (mounted) setState(() => _loading = true);
+          },
+          onPageFinished: (_) {
+            if (mounted) {
+              setState(() {
+                _loading = false;
+                _error = null;
+              });
+            }
+          },
+          onWebResourceError: (WebResourceError error) {
+            if (error.isForMainFrame != true || !mounted) return;
+            setState(() {
+              _loading = false;
+              _error = StateError('知乎登录页加载失败：${error.description}');
+            });
+          },
+        ),
+      );
+      if (!mounted) return;
+      setState(() => _webViewController = controller);
+      await controller.loadRequest(_loginUri);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = error;
+      });
+    }
+  }
+
+  Future<void> _reload() async {
+    final controller = _webViewController;
+    if (controller == null || _checking) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    await controller.loadRequest(_loginUri);
+  }
+
+  Future<void> _finish() async {
+    if (_checking) return;
+    setState(() => _checking = true);
+    try {
+      final loggedIn = await widget.controller.zhihu
+          .loginFromWebViewCookies();
+      if (!mounted) return;
+      if (loggedIn) {
+        Navigator.pop(context, true);
+      } else {
+        _showMessage('尚未检测到完整知乎 Cookie，请在网页内完成登录后重试');
+      }
+    } catch (error) {
+      if (mounted) _showMessage(SourceFailure.from(error).message);
+    } finally {
+      if (mounted) setState(() => _checking = false);
+    }
+  }
+
+  void _showMessage(String message) {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final webViewController = _webViewController;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('知乎登录'),
+        actions: <Widget>[
+          IconButton(
+            tooltip: '重新加载',
+            onPressed: _loading || _checking ? null : _reload,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: Column(
+        children: <Widget>[
+          Expanded(
+            child: Stack(
+              children: <Widget>[
+                if (webViewController != null)
+                  Positioned.fill(
+                    child: WebViewWidget(
+                      key: const Key('zhihu-login-webview'),
+                      controller: webViewController,
+                    ),
+                  ),
+                if (_loading || webViewController == null)
+                  Positioned.fill(
+                    child: ColoredBox(
+                      color: Theme.of(context).scaffoldBackgroundColor,
+                      child: const AppLoadingView(
+                        title: '正在打开知乎登录',
+                        message: '登录 Cookie 经校验后保存到系统安全存储',
+                      ),
+                    ),
+                  ),
+                if (_error != null)
+                  Positioned.fill(
+                    child: ColoredBox(
+                      color: Theme.of(context).scaffoldBackgroundColor,
+                      child: AppStateView(
+                        icon: Icons.cloud_off_outlined,
+                        iconColor: Theme.of(context).colorScheme.error,
+                        title: '知乎登录页加载失败',
+                        message: _error.toString(),
+                        actionLabel: '重新加载',
+                        onAction: _reload,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+              child: Row(
+                children: <Widget>[
+                  const Expanded(
+                    child: Text(
+                      '请在知乎官方页面完成登录。应用只提取 z_c0、_xsrf 和 d_c0，并交给本地 Go 核心校验。',
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  FilledButton(
+                    onPressed: _loading || _checking ? null : _finish,
+                    child: _checking
+                        ? const SizedBox.square(
+                            dimension: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('我已完成'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+bool _isAllowedZhihuPage(Uri uri) =>
+    uri.scheme == 'https' &&
+    (uri.host == 'zhihu.com' || uri.host.endsWith('.zhihu.com'));
 
 class _AccountCard extends StatelessWidget {
   const _AccountCard({

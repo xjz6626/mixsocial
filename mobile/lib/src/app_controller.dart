@@ -7,6 +7,7 @@ import 'models.dart';
 import 'source.dart';
 import 'tieba_source.dart';
 import 'xhs_web_source.dart';
+import 'zhihu_source.dart';
 
 @immutable
 class SearchNavigationRequest {
@@ -22,14 +23,16 @@ class SearchNavigationRequest {
 }
 
 class MixsocialController extends ChangeNotifier {
-  MixsocialController._({
+  MixsocialController({
     required this.xhs,
     required this.tieba,
+    ZhihuSource? zhihu,
     required this.settings,
-  });
+  }) : zhihu = zhihu ?? ZhihuSource.unavailable();
 
   final XhsWebSource xhs;
   final TiebaSource tieba;
+  final ZhihuSource zhihu;
   final LocalSettings settings;
 
   SourceId source = SourceId.all;
@@ -50,6 +53,7 @@ class MixsocialController extends ChangeNotifier {
   ContentFilters _filters = const ContentFilters();
   Set<String> _savedKeys = <String>{};
   Set<String> _followingProfiles = <String>{};
+  final Map<String, bool> _confirmedFollowing = <String, bool>{};
   Map<SourceId, String> _nextCursors = <SourceId, String>{};
   Set<SourceId> _moreSources = <SourceId>{};
   int _requestVersion = 0;
@@ -69,12 +73,14 @@ class MixsocialController extends ChangeNotifier {
     final values = await Future.wait<Object>(<Future<Object>>[
       XhsWebSource.create(),
       TiebaSource.create(),
+      ZhihuSource.create(),
       LocalSettings.create(),
     ]);
-    final controller = MixsocialController._(
+    final controller = MixsocialController(
       xhs: values[0] as XhsWebSource,
       tieba: values[1] as TiebaSource,
-      settings: values[2] as LocalSettings,
+      zhihu: values[2] as ZhihuSource,
+      settings: values[3] as LocalSettings,
     );
     controller.layout = await controller.settings.layoutFor(SourceId.all);
     controller.density = await controller.settings.feedDensity();
@@ -245,7 +251,12 @@ class MixsocialController extends ChangeNotifier {
         switch (selectedSource) {
               SourceId.xhs => <FeedSource>[xhs],
               SourceId.tieba => <FeedSource>[tieba],
-              SourceId.all => <FeedSource>[tieba, xhs],
+              SourceId.zhihu => <FeedSource>[zhihu],
+              SourceId.all => <FeedSource>[
+                tieba,
+                xhs,
+                if (zhihu.enabled) zhihu,
+              ],
             }
             .where((FeedSource item) => onlySources?.contains(item.id) ?? true)
             .toList();
@@ -332,7 +343,8 @@ class MixsocialController extends ChangeNotifier {
     if (xhs.searchFilters.key == value.key) return;
     xhs.setSearchFilters(value);
     notifyListeners();
-    if (searchQuery.isNotEmpty && source != SourceId.tieba) {
+    if (searchQuery.isNotEmpty &&
+        (source == SourceId.xhs || source == SourceId.all)) {
       await refresh(clearItems: true);
     }
   }
@@ -392,6 +404,9 @@ class MixsocialController extends ChangeNotifier {
     );
   }
 
+  bool supportsProfile(SourceId id) =>
+      id != SourceId.all && _source(id) is ProfileReader;
+
   Future<FeedCommentPage> floorReplies(ContentRef floor, {String cursor = ''}) {
     final target = _source(floor.source);
     if (target is! FloorReplyReader) {
@@ -406,21 +421,42 @@ class MixsocialController extends ChangeNotifier {
   bool supports(SourceId id, SourceCapability capability) =>
       id != SourceId.all && _source(id).capabilities.contains(capability);
 
-  Future<void> follow(ProfileRef profile, bool value) async {
+  Future<String?> follow(ProfileRef profile, bool value) async {
     final target = _source(profile.source);
     if (target is! RelationshipInteractor) {
       throw StateError('${profile.source.label}暂不支持关注用户');
     }
     await (target as RelationshipInteractor).follow(profile, value);
-    await settings.setFollowing(profile, value);
+    // A platform-confirmed cancellation must override stale author snapshots,
+    // including snapshots restored from the local feed cache.
+    _confirmedFollowing[profile.key] = value;
     value
         ? _followingProfiles.add(profile.key)
         : _followingProfiles.remove(profile.key);
-    await refresh();
+    items = items
+        .map(
+          (FeedItem item) => item.author.ref.key == profile.key
+              ? item.copyWith(author: item.author.copyWith(following: value))
+              : item,
+        )
+        .toList();
+    notifyListeners();
+    try {
+      await settings.setFollowing(profile, value);
+    } catch (failure) {
+      return '${profile.source.label}${value ? '已关注' : '已取消关注'}，但本地记录保存失败：$failure';
+    }
+    return null;
   }
 
-  bool isFollowing(ProfileRef profile) =>
-      _followingProfiles.contains(profile.key);
+  bool isFollowing(
+    ProfileRef profile, {
+    bool fallback = false,
+    bool? observed,
+  }) =>
+      _confirmedFollowing[profile.key] ??
+      observed ??
+      (_followingProfiles.contains(profile.key) || fallback);
 
   bool isForumBlocked(String forum) =>
       _filters.blockedForums.contains(normalizeForumName(forum));
@@ -496,8 +532,23 @@ class MixsocialController extends ChangeNotifier {
   }
 
   Future<String?> favorite(FeedItem item, bool value) async {
-    await settings.setSaved(item, value);
-    value ? _savedKeys.add(item.key) : _savedKeys.remove(item.key);
+    final target = _source(item.ref.source);
+    final usesPlatform =
+        target is ContentInteractor &&
+        target.capabilities.contains(SourceCapability.favorite);
+    if (usesPlatform) {
+      await (target as ContentInteractor).favorite(item.ref, value);
+    }
+    String? warning;
+    try {
+      await settings.setSaved(item, value);
+      value ? _savedKeys.add(item.key) : _savedKeys.remove(item.key);
+    } catch (failure) {
+      if (!usesPlatform) rethrow;
+      warning = value
+          ? '小红书已收藏，但本地副本保存失败：$failure'
+          : '小红书已取消收藏，但本地副本移除失败：$failure';
+    }
     _updateItem(
       item.ref,
       (FeedItem current) => current.copyWith(
@@ -511,17 +562,7 @@ class MixsocialController extends ChangeNotifier {
         ),
       ),
     );
-    final target = _source(item.ref.source);
-    if (target is! ContentInteractor ||
-        !target.capabilities.contains(SourceCapability.favorite)) {
-      return null;
-    }
-    try {
-      await (target as ContentInteractor).favorite(item.ref, value);
-      return null;
-    } catch (failure) {
-      return value ? '已保存到本地；平台收藏同步失败：$failure' : '已从本地收藏移除；平台取消收藏失败：$failure';
-    }
+    return warning;
   }
 
   bool isSaved(FeedItem item) => _savedKeys.contains(item.key);
@@ -533,6 +574,38 @@ class MixsocialController extends ChangeNotifier {
 
   Future<List<FeedItem>> savedItems() async =>
       prepareItems(await settings.savedItems());
+
+  Future<List<FeedItem>> readLaterItems() async =>
+      prepareItems(await settings.readLaterItems());
+
+  Future<bool> isReadLater(FeedItem item) => settings.isReadLater(item.key);
+
+  Future<void> setReadLater(FeedItem item, bool value) async {
+    await settings.setReadLater(item, value);
+    notifyListeners();
+  }
+
+  Future<void> setLocalSaved(FeedItem item, bool value) async {
+    await settings.setSaved(item, value);
+    value ? _savedKeys.add(item.key) : _savedKeys.remove(item.key);
+    // Local library management must not change the platform's favorite state.
+    if (item.ref.source != SourceId.xhs) {
+      items = items.map((current) {
+        if (current.key != item.key) return current;
+        return current.copyWith(
+          favorited: value,
+          stats: current.stats.copyWith(
+            favorites: _changedCount(
+              current.stats.favorites,
+              current.favorited,
+              value,
+            ),
+          ),
+        );
+      }).toList();
+    }
+    notifyListeners();
+  }
 
   Future<void> clearHistory() => settings.clearHistory();
 
@@ -577,9 +650,26 @@ class MixsocialController extends ChangeNotifier {
     await action(target as ContentInteractor);
   }
 
+  Future<void> commentLike(
+    ContentRef ref,
+    ContentRef comment,
+    bool value,
+  ) async {
+    if (comment.source != ref.source || comment.id.isEmpty) {
+      throw ArgumentError('评论目标与内容来源不一致或为空');
+    }
+    final target = _source(ref.source);
+    if (target is! CommentInteractor ||
+        !target.capabilities.contains(SourceCapability.commentLike)) {
+      throw StateError('${ref.source.label}暂不支持评论点赞');
+    }
+    await (target as CommentInteractor).commentLike(ref, comment, value);
+  }
+
   FeedSource _source(SourceId id) => switch (id) {
     SourceId.xhs => xhs,
     SourceId.tieba => tieba,
+    SourceId.zhihu => zhihu,
     SourceId.all => throw ArgumentError('全部不是具体数据源'),
   };
 
@@ -603,7 +693,10 @@ class MixsocialController extends ChangeNotifier {
   List<FeedItem> prepareItems(Iterable<FeedItem> values) => _filters
       .apply(values)
       .map(
-        (FeedItem item) => _savedKeys.contains(item.key) && !item.favorited
+        (FeedItem item) =>
+            item.ref.source != SourceId.xhs &&
+                _savedKeys.contains(item.key) &&
+                !item.favorited
             ? item.copyWith(favorited: true)
             : item,
       )

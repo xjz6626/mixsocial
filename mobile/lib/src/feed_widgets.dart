@@ -8,7 +8,7 @@ class FeedMediaPreview extends StatelessWidget {
     super.key,
     required this.item,
     this.borderRadius = BorderRadius.zero,
-    this.maxDimension = 960,
+    this.maxDimension = 0,
   });
 
   final FeedItem item;
@@ -25,44 +25,64 @@ class FeedMediaPreview extends StatelessWidget {
         aspectRatio: ratio,
         child: ColoredBox(
           color: Theme.of(context).colorScheme.surfaceContainerHighest,
-          child: Stack(
-            fit: StackFit.expand,
-            children: <Widget>[
-              if (media != null && media.displayUrl.isNotEmpty)
-                SourceNetworkImage(
-                  url: media.displayUrl,
-                  source: item.ref.source,
-                  fit: BoxFit.cover,
-                  maxDimension: maxDimension,
-                  semanticLabel: media.kind == 'video' ? '视频预览' : '图片预览',
-                  errorBuilder: (context, error, stackTrace) =>
-                      const _MediaFallback(),
-                )
-              else
-                const _MediaFallback(),
-              if (media?.kind == 'video')
-                const Center(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      shape: BoxShape.circle,
-                    ),
-                    child: Padding(
-                      padding: EdgeInsets.all(9),
-                      child: Icon(
-                        Icons.play_arrow_rounded,
-                        color: Colors.white,
-                        size: 30,
+          child: LayoutBuilder(
+            builder: (BuildContext context, BoxConstraints constraints) {
+              final candidates = media == null
+                  ? const <String>[]
+                  : mediaImageCandidates(
+                      media,
+                      item.ref.source,
+                      MediaImageQuality.thumbnail,
+                    );
+              final automaticDimension =
+                  (constraints.biggest.longestSide *
+                          MediaQuery.devicePixelRatioOf(context))
+                      .ceil()
+                      .clamp(480, 1280);
+              final decodeDimension = maxDimension > 0
+                  ? maxDimension
+                  : automaticDimension;
+              return Stack(
+                fit: StackFit.expand,
+                children: <Widget>[
+                  if (media != null && candidates.isNotEmpty)
+                    SourceNetworkImage(
+                      url: candidates.first,
+                      fallbackUrls: candidates.skip(1).toList(),
+                      source: item.ref.source,
+                      fit: BoxFit.cover,
+                      maxDimension: decodeDimension,
+                      semanticLabel: media.kind == 'video' ? '视频预览' : '图片预览',
+                      errorBuilder: (context, error, stackTrace) =>
+                          const _MediaFallback(),
+                    )
+                  else
+                    const _MediaFallback(),
+                  if (media?.kind == 'video')
+                    const Center(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Padding(
+                          padding: EdgeInsets.all(9),
+                          child: Icon(
+                            Icons.play_arrow_rounded,
+                            color: Colors.white,
+                            size: 30,
+                          ),
+                        ),
                       ),
                     ),
+                  Positioned(
+                    left: 8,
+                    top: 8,
+                    child: SourceBadge(source: item.ref.source),
                   ),
-                ),
-              Positioned(
-                left: 8,
-                top: 8,
-                child: SourceBadge(source: item.ref.source),
-              ),
-            ],
+                ],
+              );
+            },
           ),
         ),
       ),
@@ -80,6 +100,7 @@ class SourceBadge extends StatelessWidget {
     final colors = switch (source) {
       SourceId.xhs => (const Color(0xffe9274f), Colors.white),
       SourceId.tieba => (const Color(0xff3478f6), Colors.white),
+      SourceId.zhihu => (const Color(0xff056de8), Colors.white),
       SourceId.all => (
         Theme.of(context).colorScheme.primaryContainer,
         Theme.of(context).colorScheme.onPrimaryContainer,
@@ -120,7 +141,8 @@ class AuthorAvatar extends StatelessWidget {
       author.name.isEmpty ? '?' : author.name.characters.first,
       style: TextStyle(fontSize: radius * .9),
     );
-    if (author.avatar.isEmpty) {
+    final avatars = avatarImageCandidates(author);
+    if (avatars.isEmpty) {
       return CircleAvatar(radius: radius, child: fallback);
     }
     return CircleAvatar(
@@ -128,11 +150,15 @@ class AuthorAvatar extends StatelessWidget {
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       child: ClipOval(
         child: SourceNetworkImage(
-          url: author.avatar,
+          url: avatars.first,
+          fallbackUrls: avatars.skip(1).toList(),
           source: author.ref.source,
           width: radius * 2,
           height: radius * 2,
           fit: BoxFit.cover,
+          maxDimension: (radius * 2 * MediaQuery.devicePixelRatioOf(context))
+              .ceil()
+              .clamp(128, 512),
           errorBuilder: (context, error, stackTrace) => Center(child: fallback),
         ),
       ),

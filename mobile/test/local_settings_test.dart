@@ -118,4 +118,62 @@ void main() {
     await settings.setSaved(favorite, false);
     expect(await settings.savedItems(), isEmpty);
   });
+
+  test('read later persists independently of favorites and history', () async {
+    final item = _item(4);
+    expect(await settings.isReadLater(item.key), isFalse);
+    await settings.setSaved(item, true);
+    await settings.addHistory(item);
+    await settings.setReadLater(item, true);
+
+    final restored = LocalSettings(preferences);
+    expect(await restored.isReadLater(item.key), isTrue);
+    expect((await restored.readLaterItems()).single.favorited, isFalse);
+
+    await restored.setReadLater(item, false);
+    expect(await restored.readLaterItems(), isEmpty);
+    expect((await restored.savedItems()).single.key, item.key);
+    expect((await restored.historyItems()).single.key, item.key);
+  });
+
+  test(
+    'rapid read later writes keep all items and honor the last action',
+    () async {
+      final pending = <Future<void>>[
+        for (var index = 0; index < 12; index++)
+          settings.setReadLater(_item(index), true),
+        settings.setReadLater(_item(3), false),
+        settings.setReadLater(_item(3), true),
+        settings.setReadLater(_item(4), false),
+      ];
+      // Reads wait for already queued writes, even without awaiting each tap.
+      final items = await settings.readLaterItems();
+      await Future.wait(pending);
+      expect(items, hasLength(11));
+      expect(items.first.key, _item(3).key);
+      expect(items.map((item) => item.key).toSet(), hasLength(11));
+      expect(await settings.isReadLater(_item(4).key), isFalse);
+    },
+  );
+
+  test(
+    'read later keeps the most recent 300 items and handles bad data',
+    () async {
+      for (var index = 0; index < 302; index++) {
+        await settings.setReadLater(_item(index), true);
+      }
+      await settings.setReadLater(_item(8).copyWith(title: '更新标题'), true);
+      final items = await settings.readLaterItems();
+      expect(items, hasLength(300));
+      expect(items.first.key, _item(8).key);
+      expect(items.first.title, '更新标题');
+      expect(await settings.isReadLater(_item(1).key), isFalse);
+      expect(await settings.isReadLater(_item(2).key), isTrue);
+
+      await preferences.setString('library.readLaterState.v1', '{broken');
+      expect(await settings.readLaterItems(), isEmpty);
+      await settings.setReadLater(_item(9), true);
+      expect((await settings.readLaterItems()).single.key, _item(9).key);
+    },
+  );
 }

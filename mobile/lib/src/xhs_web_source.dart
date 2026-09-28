@@ -7,6 +7,9 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import 'models.dart';
 import 'source.dart';
+import 'xhs_account_scripts.dart';
+import 'xhs_comment_interaction_scripts.dart';
+import 'xhs_interaction_scripts.dart';
 import 'xhs_scripts.dart';
 
 class XhsSearchFilters {
@@ -63,6 +66,7 @@ class XhsWebSource
         FloorReplyReader,
         ProfileReader,
         ContentInteractor,
+        CommentInteractor,
         RelationshipInteractor {
   XhsWebSource._(this.controller);
 
@@ -144,6 +148,7 @@ class XhsWebSource
     SourceCapability.like,
     SourceCapability.favorite,
     SourceCapability.comment,
+    SourceCapability.commentLike,
     SourceCapability.reply,
     SourceCapability.hot,
     SourceCapability.followingFeed,
@@ -166,6 +171,18 @@ class XhsWebSource
   Future<void> openContentPage(ContentRef ref) => _exclusive(() async {
     _requireXhs(ref);
     await _navigate(_contentUri(ref));
+  });
+
+  Future<Author> currentProfile() => _exclusive(() async {
+    // Refresh the website's own account state; a persisted session cookie alone
+    // is not enough to identify an authenticated user.
+    await _navigate(Uri.parse(_exploreUrl));
+    try {
+      final value = await _waitForJson(xhsCurrentProfileScript, attempts: 24);
+      return Author.fromJson(mapOf(jsonDecode(value)), SourceId.xhs);
+    } on TimeoutException {
+      throw StateError('无法确认当前小红书账号，请打开登录页重新登录或完成验证');
+    }
   });
 
   Future<bool> isLoggedIn() => _exclusive(() async {
@@ -277,18 +294,53 @@ class XhsWebSource
     } else {
       await _loadMoreComments();
     }
-    final detail = FeedDetail.decode(
+    var detail = FeedDetail.decode(
       await _waitForJson(xhsDetailScript(ref.id, ref.token), attempts: 40),
     );
-    final madeProgress =
-        cursor.isEmpty || detail.comments.length > _detailCommentCount;
+    if (cursor.isEmpty &&
+        detail.comments.isEmpty &&
+        detail.item.stats.comments > 0) {
+      await _loadMoreComments();
+      for (
+        var attempt = 0;
+        detail.comments.isEmpty && attempt < 16;
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        detail = FeedDetail.decode(
+          await _waitForJson(xhsDetailScript(ref.id, ref.token), attempts: 4),
+        );
+      }
+    }
+    for (
+      var attempt = 0;
+      cursor.isNotEmpty &&
+          detail.hasMore &&
+          detail.comments.length <= _detailCommentCount &&
+          attempt < 16;
+      attempt++
+    ) {
+      if (attempt == 7) {
+        await _loadMoreComments();
+      } else {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+      detail = FeedDetail.decode(
+        await _waitForJson(xhsDetailScript(ref.id, ref.token), attempts: 4),
+      );
+    }
+    if (cursor.isNotEmpty &&
+        detail.hasMore &&
+        detail.comments.length <= _detailCommentCount) {
+      throw StateError('小红书评论暂未加载出下一页，请重试');
+    }
     _detailCommentCount = detail.comments.length;
     return FeedDetail(
       item: detail.item,
       body: detail.body,
       comments: detail.comments,
       nextCursor: detail.nextCursor,
-      hasMore: detail.hasMore && madeProgress,
+      hasMore: detail.hasMore,
     );
   });
 
@@ -308,20 +360,76 @@ class XhsWebSource
       await _navigate(_contentUri(note));
       _activeDetailId = floor.parentId;
       _detailCommentCount = 0;
-    }
-    if (cursor.isNotEmpty) {
-      final clicked = await _scriptBool(
-        xhsLoadMoreFloorRepliesScript(floor.id),
+      await _waitForJson(
+        xhsDetailScript(floor.parentId, floor.token),
+        attempts: 40,
       );
-      if (clicked) {
-        await Future<void>.delayed(const Duration(milliseconds: 850));
+    }
+    final script = xhsFloorRepliesScript(floor.parentId, floor.id);
+    var raw = await _scriptString(script);
+    // Another screen may have reused the WebView. Restore the requested parent
+    // by paging through root comments instead of polling a missing SSR entry.
+    for (var attempt = 0; raw.isEmpty && attempt < 16; attempt++) {
+      await _loadMoreComments();
+      raw = await _scriptString(script);
+      if (raw.isEmpty && attempt >= 2) {
+        final detail = FeedDetail.decode(
+          await _waitForJson(
+            xhsDetailScript(floor.parentId, floor.token),
+            attempts: 4,
+          ),
+        );
+        if (!detail.hasMore) break;
       }
     }
-    final raw = await _waitForJson(
-      xhsFloorRepliesScript(floor.parentId, floor.id),
-      attempts: 24,
-    );
-    return FeedCommentPage.decode(raw, source: SourceId.xhs);
+    if (raw.isEmpty) throw StateError('当前小红书页面没有加载到这条评论，请返回详情刷新后重试');
+    var page = FeedCommentPage.decode(raw, source: SourceId.xhs);
+    var previousCount = int.tryParse(cursor) ?? 0;
+    if (cursor.startsWith('{')) {
+      final decoded = jsonDecode(cursor);
+      if (decoded is Map && decoded['count'] is num) {
+        previousCount = (decoded['count'] as num).toInt();
+      }
+    }
+    // Opening a floor expands its first page immediately. Later requests also
+    // restore previously expanded pages after the shared WebView navigates.
+    for (var round = 0; page.hasMore && round < 12; round++) {
+      final before = page.comments.length;
+      final beforeCursor = page.nextCursor;
+      var clicked = await _scriptBool(xhsLoadMoreFloorRepliesScript(floor.id));
+      if (!clicked) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        clicked = await _scriptBool(xhsLoadMoreFloorRepliesScript(floor.id));
+      }
+      if (!clicked) {
+        if (cursor.isEmpty && page.comments.isNotEmpty) return page;
+        throw StateError('小红书尚未显示展开回复按钮，请重试');
+      }
+      for (var attempt = 0; attempt < 20; attempt++) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        raw = await _scriptString(script);
+        if (raw.isEmpty) continue;
+        page = FeedCommentPage.decode(raw, source: SourceId.xhs);
+        if (page.comments.length > before ||
+            page.nextCursor != beforeCursor ||
+            !page.hasMore) {
+          break;
+        }
+      }
+      if (page.comments.length <= before &&
+          page.nextCursor == beforeCursor &&
+          page.hasMore) {
+        if (cursor.isEmpty && page.comments.isNotEmpty) return page;
+        throw StateError('小红书回复暂未加载出下一页，请重试');
+      }
+      if (cursor.isEmpty || page.comments.length > previousCount) return page;
+    }
+    if (cursor.isNotEmpty &&
+        page.hasMore &&
+        page.comments.length <= previousCount) {
+      throw StateError('小红书正在恢复已展开的回复，请继续重试');
+    }
+    return page;
   });
 
   @override
@@ -350,10 +458,12 @@ class XhsWebSource
     final madeProgress =
         cursor.isEmpty || page.items.length > _profileItemCount;
     _profileItemCount = page.items.length;
+    final following = await _scriptString(xhsFollowStateScript(profile.id));
     return ProfilePage(
       ref: page.ref,
       name: page.name,
       avatar: page.avatar,
+      avatarUrls: page.avatarUrls,
       description: page.description,
       redId: page.redId,
       location: page.location,
@@ -361,6 +471,11 @@ class XhsWebSource
       items: page.items,
       nextCursor: page.nextCursor,
       hasMore: page.hasMore && madeProgress,
+      following: following == 'true'
+          ? true
+          : following == 'false'
+          ? false
+          : null,
     );
   });
 
@@ -368,7 +483,7 @@ class XhsWebSource
   Future<void> like(ContentRef ref, bool value) => _toggleContent(
     ref,
     field: 'liked',
-    selector: '.interact-container .left .like-lottie',
+    action: 'like',
     value: value,
     label: value ? '点赞' : '取消点赞',
   );
@@ -377,91 +492,220 @@ class XhsWebSource
   Future<void> favorite(ContentRef ref, bool value) => _toggleContent(
     ref,
     field: 'collected',
-    selector: '.interact-container .left .reds-icon.collect-icon',
+    action: 'favorite',
     value: value,
     label: value ? '收藏' : '取消收藏',
   );
 
   @override
   Future<void> comment(ContentRef ref, String body) => _exclusive(() async {
+    _requireXhs(ref);
     final content = body.trim();
     if (content.isEmpty) throw ArgumentError('评论不能为空');
     await _navigate(_contentUri(ref));
-    if (!await _scriptBool(xhsCommentScript(content))) {
-      throw StateError('小红书网页没有可用的评论输入框');
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 350));
-    if (!await _scriptBool(xhsSubmitCommentScript)) {
-      throw StateError('小红书评论按钮不可用');
-    }
-    await _waitForBool(xhsCommentVisibleScript(content), label: '确认评论结果');
+    await _submitComment(ref, content);
   });
 
   @override
   Future<void> reply(ContentRef ref, ContentRef comment, String body) =>
       _exclusive(() async {
+        _requireXhs(ref);
+        _requireXhs(comment);
+        if (comment.id.isEmpty) throw ArgumentError('回复目标不能为空');
         final content = body.trim();
         if (content.isEmpty) throw ArgumentError('回复不能为空');
         await _navigate(_contentUri(ref));
-        var found = await _scriptBool(xhsReplyTargetScript(comment.id));
+        var found = await _scriptBool(xhsSelectReplyTargetScript(comment.id));
         for (var attempt = 0; !found && attempt < 10; attempt++) {
           await _loadMoreComments();
-          found = await _scriptBool(xhsReplyTargetScript(comment.id));
+          if (comment.parentId.isNotEmpty && comment.parentId != ref.id) {
+            await controller.runJavaScript(
+              xhsLoadMoreFloorRepliesScript(comment.parentId),
+            );
+            await Future<void>.delayed(const Duration(milliseconds: 350));
+          }
+          found = await _scriptBool(xhsSelectReplyTargetScript(comment.id));
         }
         if (!found) {
           throw StateError('当前评论区中没有找到回复目标');
         }
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-        if (!await _scriptBool(xhsCommentScript(content))) {
-          throw StateError('小红书回复输入框不可用');
+        await _submitComment(ref, content, targetId: comment.id);
+      });
+
+  @override
+  Future<void> commentLike(ContentRef ref, ContentRef comment, bool value) =>
+      _exclusive(() async {
+        _requireXhs(ref);
+        _requireXhs(comment);
+        if (comment.id.isEmpty) throw ArgumentError('点赞评论目标不能为空');
+        await _navigate(_contentUri(ref));
+        var current = '';
+        // Only read/expand while locating. A missing state must not become an
+        // assumed false, and a retry here must never resubmit a write.
+        for (var attempt = 0; attempt < 12; attempt++) {
+          current = await _scriptString(
+            xhsCommentLikeStateScript(ref.id, comment.id),
+          );
+          if (current == 'true' || current == 'false') break;
+          await _loadMoreComments();
+          if (comment.parentId.isNotEmpty && comment.parentId != ref.id) {
+            await controller.runJavaScript(
+              xhsLoadMoreFloorRepliesScript(comment.parentId),
+            );
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 350));
         }
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-        if (!await _scriptBool(xhsSubmitCommentScript)) {
-          throw StateError('小红书回复按钮不可用');
+        if (current != 'true' && current != 'false') {
+          throw StateError('未找到这条评论的可用点赞状态，请刷新评论或在网页检查登录');
         }
-        await _waitForBool(xhsCommentVisibleScript(content), label: '确认回复结果');
+        if (current == value.toString()) return;
+        await _performObservedInteraction(
+          ref,
+          action: 'commentLike',
+          targetId: comment.id,
+          value: value,
+          trigger: xhsClickCommentLikeScript(comment.id),
+          label: value ? '点赞评论' : '取消评论点赞',
+        );
       });
 
   @override
   Future<void> follow(ProfileRef profile, bool value) => _exclusive(() async {
     _requireXhsProfile(profile);
     await _navigate(_profileUri(profile));
-    final state = await _scriptString(xhsFollowStateScript());
-    if (state == value.toString()) return;
-    if (!await _scriptBool(xhsClickFollowScript(value))) {
-      throw StateError('小红书网页没有找到${value ? '关注' : '取消关注'}按钮');
+    var current = '';
+    for (var attempt = 0; attempt < 32; attempt++) {
+      current = await _scriptString(xhsFollowStateScript(profile.id));
+      if (current == 'true' || current == 'false') break;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
     }
-    if (!value) {
-      await Future<void>.delayed(const Duration(milliseconds: 350));
-      await _scriptBool(xhsConfirmUnfollowScript);
+    if (current != 'true' && current != 'false') {
+      throw StateError('小红书关注状态尚未加载，请在网页检查登录或验证状态');
     }
-    await _waitForString(
-      xhsFollowStateScript(),
-      value.toString(),
-      label: '确认关注状态',
+    if (current == value.toString()) return;
+    await _performObservedInteraction(
+      null,
+      action: 'follow',
+      profileId: profile.id,
+      value: value,
+      trigger: xhsClickFollowScript(value, profile.id),
+      confirmationTrigger: value ? null : xhsConfirmUnfollowScript,
+      label: value ? '关注' : '取消关注',
     );
   });
 
   Future<void> _toggleContent(
     ContentRef ref, {
     required String field,
-    required String selector,
+    required String action,
     required bool value,
     required String label,
   }) => _exclusive(() async {
     _requireXhs(ref);
     await _navigate(_contentUri(ref));
-    final current = await _scriptString(xhsInteractStateScript(ref.id, field));
-    if (current == value.toString()) return;
-    if (!await _scriptBool(xhsClickScript(selector))) {
-      throw StateError('小红书网页没有找到$label按钮');
+    var current = '';
+    for (var attempt = 0; attempt < 32; attempt++) {
+      current = await _scriptString(
+        xhsCurrentInteractionStateScript(ref.id, field),
+      );
+      if (current == 'true' || current == 'false') break;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
     }
-    await _waitForString(
-      xhsInteractStateScript(ref.id, field),
-      value.toString(),
-      label: '确认$label结果',
+    if (current != 'true' && current != 'false') {
+      throw StateError('小红书互动状态尚未加载，请在网页检查登录或验证状态');
+    }
+    if (current == value.toString()) return;
+    await _performObservedInteraction(
+      ref,
+      action: action,
+      value: value,
+      trigger: xhsClickInteractionScript(action),
+      label: label,
     );
   });
+
+  Future<void> _submitComment(
+    ContentRef ref,
+    String content, {
+    String targetId = '',
+  }) async {
+    final label = targetId.isEmpty ? '评论' : '回复';
+    await _waitForBool(xhsFillCommentScript(content), label: '填写$label输入框');
+    await _waitForBool(
+      xhsSubmitCommentInteractionScript(submit: false),
+      label: '等待$label按钮可用',
+    );
+    await _performObservedInteraction(
+      ref,
+      action: 'comment',
+      content: content,
+      targetId: targetId,
+      trigger: xhsSubmitCommentInteractionScript(),
+      label: label,
+    );
+  }
+
+  Future<void> _performObservedInteraction(
+    ContentRef? ref, {
+    required String action,
+    required String trigger,
+    required String label,
+    bool value = false,
+    String content = '',
+    String targetId = '',
+    String profileId = '',
+    String? confirmationTrigger,
+  }) async {
+    final operationId = '${DateTime.now().microsecondsSinceEpoch}';
+    await controller.runJavaScript(xhsInstallInteractionObserverScript);
+    if (!await _scriptBool(
+      xhsBeginInteractionScript(
+        operationId: operationId,
+        noteId: ref?.id ?? '',
+        action: action,
+        value: value,
+        content: content,
+        targetId: targetId,
+        profileId: profileId,
+      ),
+    )) {
+      throw StateError('小红书仍有互动等待确认，请刷新检查结果');
+    }
+    try {
+      // Only the readiness checks above may repeat. Never retry this click or
+      // switch transports after submission: the server may have accepted it.
+      if (!await _scriptBool(trigger)) {
+        throw StateError('小红书网页没有找到可用的$label按钮');
+      }
+      var confirmationClicked = false;
+      for (var attempt = 0; attempt < 60; attempt++) {
+        final result =
+            jsonDecode(
+                  await _scriptString(xhsInteractionResultScript(operationId)),
+                )
+                as Map<String, dynamic>;
+        if (result['status'] == 'success') return;
+        if (result['status'] == 'error' || result['status'] == 'unknown') {
+          throw StateError('$label：${result['message']}');
+        }
+        // Some website versions unfollow immediately, others open a dialog.
+        // Never click a confirmation after a request has already been sent.
+        if (confirmationTrigger != null &&
+            !confirmationClicked &&
+            result['sent'] != true) {
+          confirmationClicked = await _scriptBool(confirmationTrigger);
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+      throw StateError('$label结果尚未确认，请刷新检查后再操作，避免重复提交');
+    } finally {
+      try {
+        await controller.runJavaScript(xhsCancelInteractionScript(operationId));
+      } catch (_) {
+        // A navigation can destroy the observer while waiting for a response.
+      }
+    }
+  }
 
   Future<T> _exclusive<T>(Future<T> Function() operation) {
     final task = _operationTail.then<T>((_) => operation());
@@ -546,18 +790,6 @@ class XhsWebSource
   Future<void> _waitForBool(String script, {required String label}) async {
     for (var attempt = 0; attempt < 16; attempt++) {
       if (await _scriptBool(script)) return;
-      await Future<void>.delayed(const Duration(milliseconds: 300));
-    }
-    throw StateError('$label失败');
-  }
-
-  Future<void> _waitForString(
-    String script,
-    String expected, {
-    required String label,
-  }) async {
-    for (var attempt = 0; attempt < 16; attempt++) {
-      if (await _scriptString(script) == expected) return;
       await Future<void>.delayed(const Duration(milliseconds: 300));
     }
     throw StateError('$label失败');

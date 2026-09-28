@@ -80,6 +80,7 @@ func TestEncodeFloorRepliesRequest(t *testing.T) {
 func TestForumRequestAndResponse(t *testing.T) {
 	content := appendString(nil, 2, "hello from protobuf")
 	user := appendUint(nil, 2, 42)
+	user = appendString(user, 3, "tester-token")
 	user = appendString(user, 4, "tester")
 	thread := appendUint(nil, 1, 12345)
 	thread = appendString(thread, 3, "A thread")

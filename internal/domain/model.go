@@ -104,10 +104,12 @@ type CommentPage struct {
 
 type Detail struct {
 	Item
-	Body       string    `json:"body"`
-	Comments   []Comment `json:"comments,omitempty"`
-	NextCursor string    `json:"nextCursor,omitempty"`
-	HasMore    bool      `json:"hasMore,omitempty"`
+	Body        string    `json:"body"`
+	Comments    []Comment `json:"comments,omitempty"`
+	NextCursor  string    `json:"nextCursor,omitempty"`
+	HasMore     bool      `json:"hasMore,omitempty"`
+	CurrentPage int       `json:"currentPage,omitempty"`
+	TotalPages  int       `json:"totalPages,omitempty"`
 }
 
 type Page struct {

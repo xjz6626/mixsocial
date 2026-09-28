@@ -3,7 +3,8 @@ import 'dart:convert';
 enum SourceId {
   all('all', '全部'),
   xhs('xhs', '小红书'),
-  tieba('tieba', '贴吧');
+  tieba('tieba', '贴吧'),
+  zhihu('zhihu', '知乎');
 
   const SourceId(this.id, this.label);
   final String id;
@@ -12,6 +13,7 @@ enum SourceId {
   static SourceId parse(Object? value) => switch (value?.toString()) {
     'xhs' => SourceId.xhs,
     'tieba' => SourceId.tieba,
+    'zhihu' => SourceId.zhihu,
     _ => SourceId.all,
   };
 }
@@ -54,6 +56,7 @@ enum SourceCapability {
   like,
   favorite,
   comment,
+  commentLike,
   reply,
   hot,
   followingFeed,
@@ -276,6 +279,7 @@ class Author {
     required this.id,
     required this.name,
     this.avatar = '',
+    this.avatarUrls = const <String>[],
     this.following = false,
   });
 
@@ -283,17 +287,20 @@ class Author {
   final String id;
   final String name;
   final String avatar;
+  final List<String> avatarUrls;
   final bool following;
 
   factory Author.fromJson(Map<String, Object?> json, SourceId source) {
     final refJson = mapOf(json['ref']);
+    final avatars = _authorAvatarUrls(json);
     return Author(
       ref: refJson.isEmpty
           ? ProfileRef(source: source, id: json['id']?.toString() ?? '')
           : ProfileRef.fromJson(refJson),
       id: json['id']?.toString() ?? '',
       name: json['name']?.toString() ?? '未知用户',
-      avatar: json['avatar']?.toString() ?? '',
+      avatar: avatars.firstOrNull ?? '',
+      avatarUrls: avatars.skip(1).toList(),
       following: json['following'] == true,
     );
   }
@@ -303,6 +310,7 @@ class Author {
     'id': id,
     'name': name,
     if (avatar.isNotEmpty) 'avatar': avatar,
+    if (avatarUrls.isNotEmpty) 'avatar_urls': avatarUrls,
     if (following) 'following': true,
   };
 
@@ -311,14 +319,50 @@ class Author {
     String? id,
     String? name,
     String? avatar,
+    List<String>? avatarUrls,
     bool? following,
   }) => Author(
     ref: ref ?? this.ref,
     id: id ?? this.id,
     name: name ?? this.name,
     avatar: avatar ?? this.avatar,
+    avatarUrls:
+        avatarUrls ?? (avatar == null ? this.avatarUrls : const <String>[]),
     following: following ?? this.following,
   );
+}
+
+List<String> _authorAvatarUrls(Map<String, Object?> json) {
+  final urls = <String>{};
+  void collect(Object? value) {
+    if (value is String) {
+      final url = value.trim();
+      if (url.isNotEmpty) urls.add(url);
+    } else if (value is List) {
+      for (final item in value) {
+        collect(item);
+      }
+    } else if (value is Map) {
+      for (final key in <String>['url', 'urlDefault', 'url_default', 'urls']) {
+        collect(value[key]);
+      }
+    }
+  }
+
+  for (final key in <String>[
+    'avatar',
+    'avatar_urls',
+    'avatarUrls',
+    'avatarUrl',
+    'avatar_url',
+    'image',
+    'image_url',
+    'imageb',
+    'images',
+  ]) {
+    collect(json[key]);
+  }
+  return urls.toList();
 }
 
 class ItemStats {
@@ -389,11 +433,17 @@ class MediaItem {
   // A video URL is not an image. Render its cover when present and otherwise
   // show the video placeholder/play button instead of feeding MP4 bytes to an
   // image decoder (which previously resulted in an unexplained grey tile).
-  String get displayUrl => kind == 'video'
+  String get previewImageUrl => kind == 'video'
       ? previewUrl
       : previewUrl.isNotEmpty
       ? previewUrl
       : url;
+  String get fullImageUrl => kind == 'video'
+      ? previewUrl
+      : url.isNotEmpty
+      ? url
+      : previewUrl;
+  String get displayUrl => previewImageUrl;
   double get aspectRatio => width > 0 && height > 0 ? width / height : 3 / 4;
 
   factory MediaItem.fromJson(Map<String, Object?> json) => MediaItem(
@@ -544,6 +594,7 @@ class FeedComment {
     this.publishedAt,
     this.floor = 0,
     this.likes = 0,
+    this.liked,
     this.replyCount = 0,
     this.media = const <MediaItem>[],
     this.replies = const <FeedComment>[],
@@ -555,6 +606,8 @@ class FeedComment {
   final DateTime? publishedAt;
   final int floor;
   final int likes;
+  // An absent web state is unknown, not evidence that the user has not liked it.
+  final bool? liked;
   final int replyCount;
   final List<MediaItem> media;
   final List<FeedComment> replies;
@@ -570,6 +623,7 @@ class FeedComment {
       publishedAt: DateTime.tryParse(json['publishedAt']?.toString() ?? ''),
       floor: integer(json['floor']),
       likes: integer(json['likes']),
+      liked: json['liked'] is bool ? json['liked'] as bool : null,
       replyCount: integer(json['replyCount']),
       media: listOfMaps(json['media']).map(MediaItem.fromJson).toList(),
       replies: listOfMaps(json['replies'])
@@ -580,18 +634,23 @@ class FeedComment {
     );
   }
 
-  FeedComment copyWith({List<MediaItem>? media, List<FeedComment>? replies}) =>
-      FeedComment(
-        ref: ref,
-        author: author,
-        body: body,
-        publishedAt: publishedAt,
-        floor: floor,
-        likes: likes,
-        replyCount: replyCount,
-        media: media ?? this.media,
-        replies: replies ?? this.replies,
-      );
+  FeedComment copyWith({
+    int? likes,
+    bool? liked,
+    List<MediaItem>? media,
+    List<FeedComment>? replies,
+  }) => FeedComment(
+    ref: ref,
+    author: author,
+    body: body,
+    publishedAt: publishedAt,
+    floor: floor,
+    likes: likes ?? this.likes,
+    liked: liked ?? this.liked,
+    replyCount: replyCount,
+    media: media ?? this.media,
+    replies: replies ?? this.replies,
+  );
 }
 
 class FeedCommentPage {
@@ -641,6 +700,7 @@ class ProfilePage {
     required this.ref,
     required this.name,
     this.avatar = '',
+    this.avatarUrls = const <String>[],
     this.description = '',
     this.redId = '',
     this.location = '',
@@ -648,11 +708,13 @@ class ProfilePage {
     this.items = const <FeedItem>[],
     this.nextCursor = '',
     this.hasMore = false,
+    this.following,
   });
 
   final ProfileRef ref;
   final String name;
   final String avatar;
+  final List<String> avatarUrls;
   final String description;
   final String redId;
   final String location;
@@ -660,19 +722,25 @@ class ProfilePage {
   final List<FeedItem> items;
   final String nextCursor;
   final bool hasMore;
+  final bool? following;
 
-  factory ProfilePage.fromJson(Map<String, Object?> json) => ProfilePage(
-    ref: ProfileRef.fromJson(mapOf(json['ref'])),
-    name: json['name']?.toString() ?? '未知用户',
-    avatar: json['avatar']?.toString() ?? '',
-    description: json['description']?.toString() ?? '',
-    redId: json['redId']?.toString() ?? '',
-    location: json['location']?.toString() ?? '',
-    stats: listOfMaps(json['stats']).map(ProfileStat.fromJson).toList(),
-    items: listOfMaps(json['items']).map(FeedItem.fromJson).toList(),
-    nextCursor: json['nextCursor']?.toString() ?? '',
-    hasMore: json['hasMore'] == true,
-  );
+  factory ProfilePage.fromJson(Map<String, Object?> json) {
+    final avatars = _authorAvatarUrls(json);
+    return ProfilePage(
+      ref: ProfileRef.fromJson(mapOf(json['ref'])),
+      name: json['name']?.toString() ?? '未知用户',
+      avatar: avatars.firstOrNull ?? '',
+      avatarUrls: avatars.skip(1).toList(),
+      description: json['description']?.toString() ?? '',
+      redId: json['redId']?.toString() ?? '',
+      location: json['location']?.toString() ?? '',
+      stats: listOfMaps(json['stats']).map(ProfileStat.fromJson).toList(),
+      items: listOfMaps(json['items']).map(FeedItem.fromJson).toList(),
+      nextCursor: json['nextCursor']?.toString() ?? '',
+      hasMore: json['hasMore'] == true,
+      following: json['following'] is bool ? json['following'] as bool : null,
+    );
+  }
 
   static ProfilePage decode(String value) =>
       ProfilePage.fromJson(mapOf(jsonDecode(value)));
@@ -685,12 +753,18 @@ class FeedDetail {
     this.comments = const <FeedComment>[],
     this.nextCursor = '',
     this.hasMore = false,
+    this.currentPage = 1,
+    this.totalPages = 0,
   });
   final FeedItem item;
   final String body;
   final List<FeedComment> comments;
   final String nextCursor;
   final bool hasMore;
+  final int currentPage;
+
+  /// Zero means that the server did not expose a total.
+  final int totalPages;
 
   factory FeedDetail.fromJson(Map<String, Object?> json) {
     final item = FeedItem.fromJson(json);
@@ -705,6 +779,8 @@ class FeedDetail {
           .toList(),
       nextCursor: json['nextCursor']?.toString() ?? '',
       hasMore: json['hasMore'] == true,
+      currentPage: integer(json['currentPage']).clamp(1, 100000),
+      totalPages: integer(json['totalPages']).clamp(0, 100000),
     );
   }
 

@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import com.xjz.mixsocial.go.mobilecore.Mobilecore
 import com.xjz.mixsocial.go.mobilecore.Tieba
+import com.xjz.mixsocial.go.mobilecore.Zhihu
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -22,6 +23,7 @@ class MixsocialCorePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     private val mediaExecutor = Executors.newFixedThreadPool(4)
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var tieba: Tieba? = null
+    @Volatile private var zhihu: Zhihu? = null
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel = MethodChannel(binding.binaryMessenger, "mixsocial/core")
@@ -29,9 +31,9 @@ class MixsocialCorePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
-        if (call.method == "tieba.cancel") {
+        if (call.method == "tieba.cancel" || call.method == "zhihu.cancel") {
             val requestId = (call.arguments as? Map<*, *>)?.get("requestId")?.toString().orEmpty()
-            tieba?.cancel(requestId)
+            if (call.method == "tieba.cancel") tieba?.cancel(requestId) else zhihu?.cancel(requestId)
             result.success(null)
             return
         }
@@ -96,6 +98,14 @@ class MixsocialCorePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                             arguments["ref"]?.toString() ?: "{}",
                         )
                     }
+                    "tieba.profile" -> {
+                        val arguments = arguments(call)
+                        requireTieba().profileWithRequest(
+                            arguments["requestId"]?.toString() ?: "",
+                            arguments["ref"]?.toString() ?: "{}",
+                            arguments["cursor"]?.toString() ?: "",
+                        )
+                    }
                     "tieba.detailPage" -> {
                         val arguments = arguments(call)
                         requireTieba().detailPageWithRequest(
@@ -125,6 +135,91 @@ class MixsocialCorePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                         requireTieba().clearCredential()
                         null
                     }
+                    "zhihu.configure" -> {
+                        val arguments = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
+                        val config = JSONObject()
+                            .put("timeout", arguments["timeout"]?.toString() ?: "45s")
+                            .put("pageSize", (arguments["pageSize"] as? Number)?.toInt() ?: 10)
+                        zhihu?.close()
+                        zhihu = Mobilecore.newZhihu(config.toString())
+                        null
+                    }
+                    "zhihu.browse" -> {
+                        val arguments = arguments(call)
+                        requireZhihu().browseWithRequest(
+                            arguments["requestId"]?.toString() ?: "",
+                            arguments["channel"]?.toString() ?: "recommend",
+                            arguments["cursor"]?.toString() ?: "",
+                        )
+                    }
+                    "zhihu.search" -> {
+                        val arguments = arguments(call)
+                        requireZhihu().searchWithRequest(
+                            arguments["requestId"]?.toString() ?: "",
+                            arguments["query"]?.toString() ?: "",
+                            arguments["cursor"]?.toString() ?: "",
+                        )
+                    }
+                    "zhihu.detail" -> {
+                        val arguments = arguments(call)
+                        requireZhihu().detailWithRequest(
+                            arguments["requestId"]?.toString() ?: "",
+                            arguments["ref"]?.toString() ?: "{}",
+                        )
+                    }
+                    "zhihu.comments" -> {
+                        val arguments = arguments(call)
+                        requireZhihu().commentsWithRequest(
+                            arguments["requestId"]?.toString() ?: "",
+                            arguments["ref"]?.toString() ?: "{}",
+                            arguments["cursor"]?.toString() ?: "",
+                        )
+                    }
+                    "zhihu.like" -> {
+                        val arguments = arguments(call)
+                        requireZhihu().likeWithRequest(
+                            arguments["requestId"]?.toString() ?: "",
+                            arguments["ref"]?.toString() ?: "{}",
+                            arguments["value"] as? Boolean ?: false,
+                        )
+                        null
+                    }
+                    "zhihu.comment" -> {
+                        val arguments = arguments(call)
+                        requireZhihu().commentWithRequest(
+                            arguments["requestId"]?.toString() ?: "",
+                            arguments["ref"]?.toString() ?: "{}",
+                            arguments["body"]?.toString() ?: "",
+                        )
+                        null
+                    }
+                    "zhihu.reply" -> {
+                        val arguments = arguments(call)
+                        requireZhihu().replyWithRequest(
+                            arguments["requestId"]?.toString() ?: "",
+                            arguments["ref"]?.toString() ?: "{}",
+                            arguments["comment"]?.toString() ?: "{}",
+                            arguments["body"]?.toString() ?: "",
+                        )
+                        null
+                    }
+                    "zhihu.login" -> {
+                        val arguments = arguments(call)
+                        requireZhihu().loginWithCredentialRequest(
+                            arguments["requestId"]?.toString() ?: "",
+                            arguments["credential"]?.toString() ?: "",
+                        )
+                    }
+                    "zhihu.loginStatus" -> {
+                        val arguments = arguments(call)
+                        requireZhihu().loginStatusWithRequest(
+                            arguments["requestId"]?.toString() ?: "",
+                        )
+                    }
+                    "zhihu.clearCredential" -> {
+                        requireZhihu().clearCredential()
+                        null
+                    }
                     "media.fetchImage" -> fetchImage(arguments(call))
                     else -> {
                         mainHandler.post { result.notImplemented() }
@@ -149,12 +244,14 @@ class MixsocialCorePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             "context canceled" in message || "cancelled" in message -> "CANCELLED"
             "deadline exceeded" in message || "timeout" in message || "超时" in message -> "TIMEOUT"
             error is IllegalArgumentException || "invalid" in message || "不能为空" in message -> "INVALID_ARGUMENT"
-            "登录" in message || "bduss" in message || "credential" in message -> "AUTH"
+            "登录" in message || "bduss" in message || "cookie" in message || "credential" in message -> "AUTH"
             else -> "CORE"
         }
     }
 
     private fun requireTieba(): Tieba = tieba ?: throw IllegalStateException("Tieba core is not configured")
+
+    private fun requireZhihu(): Zhihu = zhihu ?: throw IllegalStateException("Zhihu core is not configured")
 
     private fun fetchImage(arguments: Map<*, *>): ByteArray {
         val rawUrl = arguments["url"]?.toString().orEmpty()
@@ -280,6 +377,8 @@ class MixsocialCorePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         channel.setMethodCallHandler(null)
         tieba?.close()
         tieba = null
+        zhihu?.close()
+        zhihu = null
         executor.shutdownNow()
         mediaExecutor.shutdownNow()
     }

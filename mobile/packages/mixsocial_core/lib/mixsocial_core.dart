@@ -7,7 +7,11 @@ class MixsocialCore {
 
   static const MethodChannel _channel = MethodChannel('mixsocial/core');
   static int _nextRequest = 0;
-  static Duration _operationTimeout = const Duration(seconds: 47);
+  static final Map<String, Duration> _operationTimeoutBySource =
+      <String, Duration>{
+        'tieba': const Duration(seconds: 47),
+        'zhihu': const Duration(seconds: 47),
+      };
 
   static Future<void> configureTieba({
     List<String> forums = const <String>[],
@@ -17,7 +21,20 @@ class MixsocialCore {
       'forums': forums,
       'timeout': timeout,
     });
-    _operationTimeout = _durationFromGo(timeout) + const Duration(seconds: 2);
+    _operationTimeoutBySource['tieba'] =
+        _durationFromGo(timeout) + const Duration(seconds: 2);
+  }
+
+  static Future<void> configureZhihu({
+    String timeout = '45s',
+    int pageSize = 10,
+  }) async {
+    await _channel.invokeMethod<void>('zhihu.configure', <String, Object>{
+      'timeout': timeout,
+      'pageSize': pageSize,
+    });
+    _operationTimeoutBySource['zhihu'] =
+        _durationFromGo(timeout) + const Duration(seconds: 2);
   }
 
   static Future<String> browseTieba(String channel, String cursor) async {
@@ -70,6 +87,16 @@ class MixsocialCore {
         '[]';
   }
 
+  static Future<String> profileTieba(
+    String refJson, {
+    String cursor = '',
+  }) async =>
+      (await _invoke<String>('tieba.profile', <String, Object>{
+        'ref': refJson,
+        'cursor': cursor,
+      })) ??
+      '{}';
+
   static Future<String> tiebaDetail(String refJson) async {
     return (await _invoke<String>('tieba.detail', <String, Object>{
           'ref': refJson,
@@ -111,6 +138,68 @@ class MixsocialCore {
     await _channel.invokeMethod<void>('tieba.clearCredential');
   }
 
+  static Future<String> browseZhihu(String channel, String cursor) async =>
+      (await _invoke<String>('zhihu.browse', <String, Object>{
+        'channel': channel,
+        'cursor': cursor,
+      })) ??
+      '{"items":[]}';
+
+  static Future<String> searchZhihu(String query, String cursor) async =>
+      (await _invoke<String>('zhihu.search', <String, Object>{
+        'query': query,
+        'cursor': cursor,
+      })) ??
+      '{"items":[]}';
+
+  static Future<String> zhihuDetail(String refJson) async =>
+      (await _invoke<String>('zhihu.detail', <String, Object>{
+        'ref': refJson,
+      })) ??
+      '{}';
+
+  static Future<String> zhihuComments(String refJson, String cursor) async =>
+      (await _invoke<String>('zhihu.comments', <String, Object>{
+        'ref': refJson,
+        'cursor': cursor,
+      })) ??
+      '{"comments":[]}';
+
+  static Future<void> likeZhihu(String refJson, bool value) => _invoke<void>(
+    'zhihu.like',
+    <String, Object>{'ref': refJson, 'value': value},
+  );
+
+  static Future<void> commentZhihu(String refJson, String body) =>
+      _invoke<void>('zhihu.comment', <String, Object>{
+        'ref': refJson,
+        'body': body,
+      });
+
+  static Future<void> replyZhihu(
+    String refJson,
+    String commentJson,
+    String body,
+  ) => _invoke<void>('zhihu.reply', <String, Object>{
+    'ref': refJson,
+    'comment': commentJson,
+    'body': body,
+  });
+
+  static Future<String> loginZhihu(String credential) async =>
+      (await _invoke<String>('zhihu.login', <String, Object>{
+        'credential': credential,
+      })) ??
+      '{}';
+
+  static Future<String> zhihuLoginStatus() async =>
+      (await _invoke<String>('zhihu.loginStatus', const <String, Object>{})) ??
+      '{}';
+
+  static Future<void> clearZhihuCredential() async {
+    await _channel.invokeMethod<void>('zhihu.clearCredential');
+  }
+
   /// Downloads and normalizes an image with Android's native image stack.
   ///
   /// Some Tieba/XHS CDN responses that Android image loaders accept are not
@@ -142,17 +231,21 @@ class MixsocialCore {
     final requestId =
         '${DateTime.now().microsecondsSinceEpoch}-${_nextRequest++}';
     final values = <String, Object>{...arguments, 'requestId': requestId};
+    final source = method.split('.').first;
+    final timeout =
+        _operationTimeoutBySource[source] ?? const Duration(seconds: 47);
     try {
-      return await _channel
-          .invokeMethod<T>(method, values)
-          .timeout(_operationTimeout);
+      return await _channel.invokeMethod<T>(method, values).timeout(timeout);
     } on TimeoutException {
-      unawaited(
-        _channel.invokeMethod<void>('tieba.cancel', <String, Object>{
-          'requestId': requestId,
-        }),
-      );
-      throw const MixsocialCoreException('TIMEOUT', '贴吧请求超时');
+      if (source == 'tieba' || source == 'zhihu') {
+        unawaited(
+          _channel.invokeMethod<void>('$source.cancel', <String, Object>{
+            'requestId': requestId,
+          }),
+        );
+      }
+      final label = source == 'zhihu' ? '知乎' : '贴吧';
+      throw MixsocialCoreException('TIMEOUT', '$label请求超时');
     } on PlatformException catch (error) {
       throw MixsocialCoreException(error.code, error.message ?? '移动核心调用失败');
     }

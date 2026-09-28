@@ -8,16 +8,19 @@ import 'detail_screen.dart';
 import 'feed_widgets.dart';
 import 'models.dart';
 import 'network_media.dart';
+import 'official_page_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({
     super.key,
     required this.controller,
     required this.author,
+    this.isOwnProfile = false,
   });
 
   final MixsocialController controller;
   final Author author;
+  final bool isOwnProfile;
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
@@ -34,34 +37,57 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _loadingMore = false;
   bool _working = false;
   Object? _error;
-  late bool _following =
-      widget.controller.isFollowing(widget.author.ref) ||
-      widget.author.following;
+  Object? _paginationError;
+  int _requestGeneration = 0;
+  late bool _following = widget.controller.isFollowing(
+    widget.author.ref,
+    fallback: widget.author.following,
+  );
 
   @override
   void initState() {
     super.initState();
+    widget.controller.addListener(_syncFollowing);
     _scrollController.addListener(_loadMoreNearEnd);
     unawaited(_load());
   }
 
   @override
   void dispose() {
+    widget.controller.removeListener(_syncFollowing);
     _scrollController.dispose();
     super.dispose();
   }
 
+  void _syncFollowing() {
+    final value = widget.controller.isFollowing(
+      widget.author.ref,
+      fallback: widget.author.following,
+      observed: _profile?.following,
+    );
+    if (mounted && value != _following) {
+      setState(() => _following = value);
+    }
+  }
+
   void _loadMoreNearEnd() {
-    if (_scrollController.hasClients &&
+    if (_error == null &&
+        _paginationError == null &&
+        _scrollController.hasClients &&
         _scrollController.position.extentAfter < 520) {
       unawaited(_loadMore());
     }
   }
 
   Future<void> _load() async {
+    if (!mounted) return;
+    final generation = ++_requestGeneration;
+    final section = _section;
     setState(() {
       _loading = true;
+      _loadingMore = false;
       _error = null;
+      _paginationError = null;
       _items = const <FeedItem>[];
       _nextCursor = '';
       _hasMore = false;
@@ -69,32 +95,53 @@ class _ProfileScreenState extends State<ProfileScreen> {
     try {
       final page = await widget.controller.profile(
         widget.author.ref,
-        section: _section,
+        section: section,
       );
-      if (!mounted) return;
+      if (!mounted || generation != _requestGeneration) return;
       setState(() {
         _profile = page;
         _items = widget.controller.prepareItems(page.items);
         _nextCursor = page.nextCursor;
-        _hasMore = page.hasMore;
+        _hasMore = page.hasMore && page.nextCursor.isNotEmpty;
+        _following = widget.controller.isFollowing(
+          widget.author.ref,
+          fallback: widget.author.following,
+          observed: page.following,
+        );
       });
     } catch (error) {
-      if (mounted) setState(() => _error = error);
+      if (mounted && generation == _requestGeneration) {
+        setState(() => _error = error);
+      }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && generation == _requestGeneration) {
+        setState(() => _loading = false);
+      }
     }
   }
 
   Future<void> _loadMore() async {
-    if (_loading || _loadingMore || !_hasMore || _nextCursor.isEmpty) return;
-    setState(() => _loadingMore = true);
+    if (!mounted ||
+        _loading ||
+        _loadingMore ||
+        !_hasMore ||
+        _nextCursor.isEmpty) {
+      return;
+    }
+    final generation = _requestGeneration;
+    final cursor = _nextCursor;
+    final section = _section;
+    setState(() {
+      _loadingMore = true;
+      _paginationError = null;
+    });
     try {
       final page = await widget.controller.profile(
         widget.author.ref,
-        section: _section,
-        cursor: _nextCursor,
+        section: section,
+        cursor: cursor,
       );
-      if (!mounted) return;
+      if (!mounted || generation != _requestGeneration) return;
       final seen = _items.map((FeedItem item) => item.key).toSet();
       final additions = widget.controller
           .prepareItems(page.items)
@@ -104,20 +151,31 @@ class _ProfileScreenState extends State<ProfileScreen> {
         _profile = page;
         _items = <FeedItem>[..._items, ...additions];
         _nextCursor = page.nextCursor;
-        _hasMore = page.hasMore && additions.isNotEmpty;
+        _hasMore =
+            page.hasMore &&
+            additions.isNotEmpty &&
+            page.nextCursor.isNotEmpty &&
+            (page.nextCursor != cursor || cursor == 'more');
       });
     } catch (error) {
-      if (mounted) _message('加载更多笔记失败：$error', error: true);
+      if (mounted && generation == _requestGeneration) {
+        setState(() => _paginationError = error);
+      }
     } finally {
-      if (mounted) setState(() => _loadingMore = false);
+      if (mounted && generation == _requestGeneration) {
+        setState(() => _loadingMore = false);
+      }
     }
   }
 
   Future<void> _selectSection(ProfileSection section) async {
     if (_section == section || _loading) return;
     setState(() => _section = section);
+    // Reset cursors before jumping, since the scroll listener can otherwise
+    // start a request for the new section using the previous section's cursor.
+    final loading = _load();
     if (_scrollController.hasClients) _scrollController.jumpTo(0);
-    await _load();
+    await loading;
   }
 
   Future<void> _follow() async {
@@ -125,10 +183,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final value = !_following;
     setState(() => _working = true);
     try {
-      await widget.controller.follow(widget.author.ref, value);
+      final warning = await widget.controller.follow(widget.author.ref, value);
       if (mounted) {
         setState(() => _following = value);
-        _message(value ? '已关注' : '已取消关注');
+        _message(warning ?? (value ? '已关注' : '已取消关注'));
       }
     } catch (error) {
       if (mounted) _message(error.toString(), error: true);
@@ -149,6 +207,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  void _openOfficialProfile() {
+    final ref = _profile?.ref ?? widget.author.ref;
+    final uri = Uri.tryParse(ref.url);
+    if (ref.source != SourceId.tieba || uri == null || uri.host != 'tieba.baidu.com' || uri.path != '/home/main' || uri.userInfo.isNotEmpty) {
+      _message('当前资料没有可确认的官方主页链接，请稍后重试', error: true);
+      return;
+    }
+    Navigator.push<void>(context, MaterialPageRoute<void>(builder: (_) => OfficialPageScreen(
+      source: SourceId.tieba, title: '贴吧官方个人主页',
+      load: () => widget.controller.tieba.interactionController(ContentRef(source: SourceId.tieba, id: ref.id, url: ref.url)),
+    )));
+  }
+
   void _message(String value, {bool error = false}) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -162,7 +233,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     final profile = _profile;
     return Scaffold(
-      appBar: AppBar(title: Text(profile?.name ?? widget.author.name)),
+      appBar: AppBar(title: Text(profile?.name ?? widget.author.name), actions: <Widget>[
+        if (widget.author.ref.source == SourceId.tieba) IconButton(tooltip: '打开官方主页', onPressed: _openOfficialProfile, icon: const Icon(Icons.language)),
+      ]),
       body: RefreshIndicator(
         onRefresh: _load,
         child: CustomScrollView(
@@ -183,7 +256,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     profile: profile,
                     following: _following,
                     working: _working,
-                    onFollow: _follow,
+                    onFollow:
+                        !widget.isOwnProfile &&
+                            widget.controller.supports(
+                              widget.author.ref.source,
+                              SourceCapability.follow,
+                            )
+                        ? _follow
+                        : null,
                   ),
                 ),
               ),
@@ -195,7 +275,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   constraints: const BoxConstraints(maxWidth: 920),
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-                    child: SegmentedButton<ProfileSection>(
+                    child: widget.author.ref.source == SourceId.tieba
+                      ? const Text('公开帖子动态（主题与回复所在帖子）')
+                      : SegmentedButton<ProfileSection>(
                       segments: ProfileSection.values
                           .map(
                             (ProfileSection value) =>
@@ -265,6 +347,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   child: Center(child: CircularProgressIndicator()),
                 ),
               )
+            else if (_paginationError != null)
+              SliverToBoxAdapter(
+                child: AppStateView(
+                  icon: Icons.cloud_off_outlined,
+                  title: '加载更多失败',
+                  message: _paginationError.toString(),
+                  actionLabel: '重试加载更多',
+                  onAction: _loadMore,
+                  compact: true,
+                ),
+              )
             else if (_hasMore)
               SliverToBoxAdapter(
                 child: Padding(
@@ -295,14 +388,19 @@ class _ProfileHeader extends StatelessWidget {
   final ProfilePage? profile;
   final bool following;
   final bool working;
-  final VoidCallback onFollow;
+  final VoidCallback? onFollow;
 
   @override
   Widget build(BuildContext context) {
     final value = profile;
     final displayAuthor = author.copyWith(
       name: value?.name ?? author.name,
-      avatar: value?.avatar.isNotEmpty == true ? value!.avatar : author.avatar,
+      avatar: value?.avatar.isNotEmpty == true ? value!.avatar : null,
+      avatarUrls: <String>[
+        if (value != null) ...value.avatarUrls,
+        if (author.avatar.isNotEmpty) author.avatar,
+        ...author.avatarUrls,
+      ],
     );
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 10),
@@ -328,15 +426,16 @@ class _ProfileHeader extends StatelessWidget {
                   ],
                 ),
               ),
-              following
-                  ? OutlinedButton(
-                      onPressed: working ? null : onFollow,
-                      child: const Text('已关注'),
-                    )
-                  : FilledButton(
-                      onPressed: working ? null : onFollow,
-                      child: const Text('关注'),
-                    ),
+              if (onFollow != null)
+                following
+                    ? OutlinedButton(
+                        onPressed: working ? null : onFollow,
+                        child: const Text('已关注'),
+                      )
+                    : FilledButton(
+                        onPressed: working ? null : onFollow,
+                        child: const Text('关注'),
+                      ),
             ],
           ),
           if (value?.description.isNotEmpty == true) ...<Widget>[
@@ -401,6 +500,7 @@ class _ProfileNoteCard extends StatelessWidget {
                         url: cover,
                         source: item.ref.source,
                         fit: BoxFit.cover,
+                        maxDimension: 480,
                         errorBuilder: (_, _, _) =>
                             const Icon(Icons.broken_image_outlined),
                       ),

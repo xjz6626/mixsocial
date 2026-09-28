@@ -50,3 +50,7 @@ abstract interface class ContentInteractor {
 abstract interface class RelationshipInteractor {
   Future<void> follow(ProfileRef profile, bool value);
 }
+
+abstract interface class CommentInteractor {
+  Future<void> commentLike(ContentRef ref, ContentRef comment, bool value);
+}

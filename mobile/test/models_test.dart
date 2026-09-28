@@ -6,6 +6,18 @@ import 'package:mixsocial_mobile/src/xhs_scripts.dart';
 import 'package:mixsocial_mobile/src/xhs_web_source.dart';
 
 void main() {
+  test('parses Zhihu as a concrete source', () {
+    expect(SourceId.parse('zhihu'), SourceId.zhihu);
+    expect(
+      ContentRef.fromJson(const <String, Object>{
+        'source': 'zhihu',
+        'id': '42',
+        'token': 'answer',
+      }).source,
+      SourceId.zhihu,
+    );
+  });
+
   test('decodes the Go mobile JSON field names', () {
     final page = FeedPage.decode(
       jsonEncode(<String, Object>{
@@ -70,6 +82,17 @@ void main() {
 
     expect(withoutCover.displayUrl, isEmpty);
     expect(withCover.displayUrl, 'https://image.example/cover.jpg');
+  });
+
+  test('image media keeps preview and full-quality URLs separate', () {
+    const media = MediaItem(
+      kind: 'image',
+      url: 'https://image.example/full.jpg',
+      previewUrl: 'https://image.example/preview.jpg',
+    );
+
+    expect(media.previewImageUrl, 'https://image.example/preview.jpg');
+    expect(media.fullImageUrl, 'https://image.example/full.jpg');
   });
 
   test('profile keys remain source scoped', () {

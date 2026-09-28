@@ -6,12 +6,14 @@ import 'app_controller.dart';
 import 'design_system.dart';
 import 'detail_screen.dart';
 import 'feed_widgets.dart';
+import 'forum_preferences.dart';
 import 'models.dart';
 
 class ForumHubScreen extends StatefulWidget {
-  const ForumHubScreen({super.key, required this.controller});
+  const ForumHubScreen({super.key, required this.controller, this.preferences});
 
   final MixsocialController controller;
+  final ForumPreferencesStore? preferences;
 
   @override
   State<ForumHubScreen> createState() => _ForumHubScreenState();
@@ -19,8 +21,13 @@ class ForumHubScreen extends StatefulWidget {
 
 class _ForumHubScreenState extends State<ForumHubScreen> {
   final TextEditingController _forumController = TextEditingController();
+  late final ForumPreferencesStore _preferences =
+      widget.preferences ?? ForumPreferencesStore();
   List<String> _following = const <String>[];
   List<String> _recent = const <String>[];
+  List<String> _pinned = const <String>[];
+  String _filter = '';
+  int _generation = 0;
   Object? _error;
   bool _loading = true;
 
@@ -37,25 +44,57 @@ class _ForumHubScreenState extends State<ForumHubScreen> {
   }
 
   Future<void> _load() async {
+    final generation = ++_generation;
     setState(() {
       _loading = true;
       _error = null;
     });
-    final recent = await widget.controller.recentForums();
+    List<String> recent = _recent;
+    List<String> pinned = _pinned;
     List<String> following = const <String>[];
     Object? error;
     try {
+      recent = await widget.controller.recentForums();
+      pinned = await _preferences.pinnedForums();
       following = await widget.controller.followingForums();
     } catch (failure) {
       error = failure;
     }
-    if (!mounted) return;
+    if (!mounted || generation != _generation) return;
     setState(() {
       _recent = recent;
-      _following = following;
+      _pinned = pinned;
+      if (error == null) _following = following;
       _error = error;
       _loading = false;
     });
+  }
+
+  Future<void> _pin(String forum) async {
+    try {
+      await _preferences.setPinned(forum, !_pinned.contains(forum));
+      final pins = await _preferences.pinnedForums();
+      if (mounted) setState(() => _pinned = pins);
+    } catch (error) {
+      _message('更新本地置顶失败：$error');
+    }
+  }
+
+  void _message(String message) {
+    if (mounted)
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _removeRecent(String forum) async {
+    try {
+      await widget.controller.settings.removeRecentForum(forum);
+      if (mounted)
+        setState(() => _recent = _recent.where((v) => v != forum).toList());
+    } catch (error) {
+      _message('移除最近访问失败：$error');
+    }
   }
 
   Future<void> _openForum(String value) async {
@@ -64,8 +103,11 @@ class _ForumHubScreenState extends State<ForumHubScreen> {
     await Navigator.push<void>(
       context,
       MaterialPageRoute<void>(
-        builder: (_) =>
-            ForumScreen(controller: widget.controller, forum: forum),
+        builder: (_) => ForumScreen(
+          controller: widget.controller,
+          forum: forum,
+          preferences: _preferences,
+        ),
       ),
     );
     if (mounted) await _load();
@@ -73,6 +115,9 @@ class _ForumHubScreenState extends State<ForumHubScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final forums = <String>{..._pinned, ..._following}
+        .where((name) => name.toLowerCase().contains(_filter.toLowerCase()))
+        .toList();
     return Scaffold(
       appBar: AppBar(title: const Text('贴吧目录')),
       body: RefreshIndicator(
@@ -118,10 +163,12 @@ class _ForumHubScreenState extends State<ForumHubScreen> {
                         runSpacing: 8,
                         children: _recent
                             .map(
-                              (String forum) => ActionChip(
+                              (String forum) => InputChip(
                                 avatar: const Icon(Icons.history, size: 17),
                                 label: Text('$forum吧'),
                                 onPressed: () => _openForum(forum),
+                                onDeleted: () => _removeRecent(forum),
+                                deleteButtonTooltipMessage: '移除最近访问',
                               ),
                             )
                             .toList(),
@@ -132,12 +179,22 @@ class _ForumHubScreenState extends State<ForumHubScreen> {
                       children: <Widget>[
                         Expanded(
                           child: Text(
-                            '已关注的吧',
+                            '常看与关注的吧',
                             style: Theme.of(context).textTheme.titleMedium,
                           ),
                         ),
-                        Text('${_following.length}'),
+                        Text('${forums.length}'),
                       ],
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      key: const Key('forum-list-filter'),
+                      onChanged: (value) =>
+                          setState(() => _filter = value.trim()),
+                      decoration: const InputDecoration(
+                        hintText: '筛选已关注和置顶的吧',
+                        prefixIcon: Icon(Icons.filter_list),
+                      ),
                     ),
                     if (_error != null) ...<Widget>[
                       const SizedBox(height: 10),
@@ -150,9 +207,9 @@ class _ForumHubScreenState extends State<ForumHubScreen> {
                           ),
                         ),
                       ),
-                    ] else if (!_loading && _following.isEmpty) ...<Widget>[
+                    ] else if (!_loading && forums.isEmpty) ...<Widget>[
                       const SizedBox(height: 10),
-                      const Text('暂无已关注贴吧'),
+                      Text(_filter.isEmpty ? '暂无已关注或置顶贴吧' : '没有匹配的贴吧'),
                     ],
                     const SizedBox(height: 8),
                   ],
@@ -162,9 +219,9 @@ class _ForumHubScreenState extends State<ForumHubScreen> {
             SliverPadding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               sliver: SliverList.builder(
-                itemCount: _following.length,
+                itemCount: forums.length,
                 itemBuilder: (BuildContext context, int index) {
-                  final forum = _following[index];
+                  final forum = forums[index];
                   return ListTile(
                     contentPadding: EdgeInsets.zero,
                     leading: CircleAvatar(
@@ -174,7 +231,15 @@ class _ForumHubScreenState extends State<ForumHubScreen> {
                     subtitle: widget.controller.isForumBlocked(forum)
                         ? const Text('已在本地屏蔽')
                         : null,
-                    trailing: const Icon(Icons.chevron_right),
+                    trailing: IconButton(
+                      tooltip: _pinned.contains(forum) ? '取消本地置顶' : '本地置顶',
+                      onPressed: () => _pin(forum),
+                      icon: Icon(
+                        _pinned.contains(forum)
+                            ? Icons.push_pin
+                            : Icons.push_pin_outlined,
+                      ),
+                    ),
                     onTap: () => _openForum(forum),
                   );
                 },
@@ -189,20 +254,31 @@ class _ForumHubScreenState extends State<ForumHubScreen> {
 }
 
 class ForumScreen extends StatefulWidget {
-  const ForumScreen({super.key, required this.controller, required this.forum});
+  const ForumScreen({
+    super.key,
+    required this.controller,
+    required this.forum,
+    this.preferences,
+  });
 
   final MixsocialController controller;
   final String forum;
+  final ForumPreferencesStore? preferences;
 
   @override
   State<ForumScreen> createState() => _ForumScreenState();
 }
 
 class _ForumScreenState extends State<ForumScreen> {
+  late final ForumPreferencesStore _preferences =
+      widget.preferences ?? ForumPreferencesStore();
   final ScrollController _scrollController = ScrollController();
   final TextEditingController _searchController = TextEditingController();
   List<FeedItem> _items = const <FeedItem>[];
   Object? _error;
+  Object? _paginationError;
+  int _generation = 0;
+  bool _pinned = false;
   String _query = '';
   String _nextCursor = '';
   int _sortType = 0;
@@ -215,10 +291,12 @@ class _ForumScreenState extends State<ForumScreen> {
   void initState() {
     super.initState();
     _scrollController.addListener(() {
-      if (_scrollController.position.extentAfter < 520) unawaited(_loadMore());
+      if (_paginationError == null &&
+          _error == null &&
+          _scrollController.position.extentAfter < 520)
+        unawaited(_loadMore());
     });
-    unawaited(widget.controller.recordForumVisit(widget.forum));
-    unawaited(_load());
+    unawaited(_initialize());
   }
 
   @override
@@ -228,10 +306,61 @@ class _ForumScreenState extends State<ForumScreen> {
     super.dispose();
   }
 
+  Future<void> _initialize() async {
+    try {
+      await widget.controller.recordForumVisit(widget.forum);
+      final sort = await _preferences.sortFor(widget.forum);
+      final pins = await _preferences.pinnedForums();
+      if (!mounted) return;
+      setState(() {
+        _sortType = sort;
+        _pinned = pins.contains(widget.forum);
+      });
+    } catch (error) {
+      _message('读取本地贴吧设置失败：$error');
+    }
+    if (mounted) await _load();
+  }
+
+  void _message(String message) {
+    if (mounted)
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _pin() async {
+    final value = !_pinned;
+    try {
+      await _preferences.setPinned(widget.forum, value);
+      if (mounted) setState(() => _pinned = value);
+    } catch (error) {
+      _message('更新本地置顶失败：$error');
+    }
+  }
+
+  Future<void> _setSort(int value) async {
+    if (_sortType == value) return;
+    setState(() => _sortType = value);
+    final loading = _load();
+    try {
+      await _preferences.setSort(widget.forum, value);
+    } catch (error) {
+      _message('排序已切换，但偏好保存失败：$error');
+    }
+    await loading;
+  }
+
   Future<void> _load() async {
+    if (!mounted) return;
+    final generation = ++_generation;
+    final query = _query;
+    final sort = _sortType;
     setState(() {
       _loading = true;
       _error = null;
+      _paginationError = null;
+      _loadingMore = false;
       _items = const <FeedItem>[];
       _nextCursor = '';
       _hasMore = false;
@@ -239,36 +368,47 @@ class _ForumScreenState extends State<ForumScreen> {
     try {
       final page = await widget.controller.forum(
         widget.forum,
-        sortType: _sortType,
-        query: _query,
+        sortType: sort,
+        query: query,
       );
-      if (!mounted) return;
+      if (!mounted || generation != _generation) return;
       setState(() {
         _items = widget.controller.prepareItems(page.items);
         _nextCursor = page.nextCursor;
-        _hasMore = page.hasMore;
+        _hasMore = page.hasMore && page.nextCursor.isNotEmpty;
       });
     } catch (failure) {
-      if (mounted) setState(() => _error = failure);
+      if (mounted && generation == _generation)
+        setState(() => _error = failure);
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && generation == _generation)
+        setState(() => _loading = false);
     }
   }
 
   Future<void> _loadMore() async {
-    if (_loading || _loadingMore || !_hasMore || _nextCursor.isEmpty) return;
+    if (!mounted ||
+        _loading ||
+        _loadingMore ||
+        !_hasMore ||
+        _nextCursor.isEmpty)
+      return;
+    final generation = _generation;
+    final cursor = _nextCursor;
+    final query = _query;
+    final sort = _sortType;
     setState(() {
       _loadingMore = true;
-      _error = null;
+      _paginationError = null;
     });
     try {
       final page = await widget.controller.forum(
         widget.forum,
-        cursor: _nextCursor,
-        sortType: _sortType,
-        query: _query,
+        cursor: cursor,
+        sortType: sort,
+        query: query,
       );
-      if (!mounted) return;
+      if (!mounted || generation != _generation) return;
       final seen = _items.map((FeedItem item) => item.key).toSet();
       setState(() {
         _items = <FeedItem>[
@@ -278,12 +418,17 @@ class _ForumScreenState extends State<ForumScreen> {
           ),
         ];
         _nextCursor = page.nextCursor;
-        _hasMore = page.hasMore;
+        _hasMore =
+            page.hasMore &&
+            page.nextCursor.isNotEmpty &&
+            page.nextCursor != cursor;
       });
     } catch (failure) {
-      if (mounted) setState(() => _error = failure);
+      if (mounted && generation == _generation)
+        setState(() => _paginationError = failure);
     } finally {
-      if (mounted) setState(() => _loadingMore = false);
+      if (mounted && generation == _generation)
+        setState(() => _loadingMore = false);
     }
   }
 
@@ -328,8 +473,13 @@ class _ForumScreenState extends State<ForumScreen> {
           PopupMenuButton<String>(
             onSelected: (String value) {
               if (value == 'block') unawaited(_blockForum());
+              if (value == 'pin') unawaited(_pin());
             },
             itemBuilder: (_) => <PopupMenuEntry<String>>[
+              PopupMenuItem<String>(
+                value: 'pin',
+                child: Text(_pinned ? '取消本地置顶' : '本地置顶此吧'),
+              ),
               PopupMenuItem<String>(
                 value: 'block',
                 child: Text(
@@ -376,8 +526,7 @@ class _ForumScreenState extends State<ForumScreen> {
                 ],
                 selected: <int>{_sortType},
                 onSelectionChanged: (Set<int> values) {
-                  _sortType = values.single;
-                  unawaited(_load());
+                  unawaited(_setSort(values.single));
                 },
               ),
             ),
@@ -452,7 +601,7 @@ class _ForumScreenState extends State<ForumScreen> {
                               ),
                             );
                           }
-                          if (_error != null) {
+                          if (_paginationError != null) {
                             return Align(
                               alignment: Alignment.topCenter,
                               child: ConstrainedBox(
@@ -467,7 +616,7 @@ class _ForumScreenState extends State<ForumScreen> {
                                     leading: const Icon(Icons.error_outline),
                                     title: const Text('加载更多失败'),
                                     subtitle: Text(
-                                      _error.toString(),
+                                      _paginationError.toString(),
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
                                     ),
@@ -481,6 +630,11 @@ class _ForumScreenState extends State<ForumScreen> {
                               ),
                             );
                           }
+                          if (_hasMore)
+                            return TextButton(
+                              onPressed: _loadMore,
+                              child: const Text('加载更多主题'),
+                            );
                           return Padding(
                             padding: const EdgeInsets.all(18),
                             child: const Center(child: Text('已经到底了')),

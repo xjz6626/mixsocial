@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'xhs_comment_scripts.dart';
+
 const String xhsDesktopPageScript = r'''(() => {
   let viewport = document.querySelector('meta[name="viewport"]');
   if (!viewport) {
@@ -33,7 +35,9 @@ const String xhsLoginStatusScript = r'''(() => {
   return !!document.querySelector('.main-container .user .link-wrapper .channel');
 })()''';
 
-const String xhsFeedScript = r'''(() => {
+const String xhsFeedScript =
+    '(() => {$xhsAvatarHelpers'
+    r'''
   const unwrap = (value) => value && value.value !== undefined
       ? value.value
       : value && value._value !== undefined ? value._value
@@ -49,13 +53,21 @@ const String xhsFeedScript = r'''(() => {
     return Number.isFinite(number) ? Math.trunc(number * unit) : 0;
   };
   const first = (...values) => values.find((value) => typeof value === 'string' && value.length) || '';
+  const imageEntries = (image) => Array.isArray(image?.infoList) ? image.infoList.filter(Boolean) : [];
+  const sceneImage = (image, pattern) => imageEntries(image)
+    .find((entry) => pattern.test(String(entry.imageScene || entry.image_scene || entry.scene || '')))?.url || '';
+  const highImage = (image) => first(sceneImage(image, /ori|origin/i), image?.urlDefault,
+    sceneImage(image, /dft|default/i), image?.url,
+    ...imageEntries(image).map((entry) => entry.url), image?.urlPre);
+  const previewImage = (image) => first(image?.urlPre, sceneImage(image, /prv|preview/i),
+    image?.urlDefault, image?.url, ...imageEntries(image).map((entry) => entry.url));
   const items = feeds.filter((feed) => feed && (!feed.modelType || feed.modelType === 'note')).map((feed) => {
     const card = feed.noteCard || {};
     const user = card.user || {};
     const cover = card.cover || {};
     const info = card.interactInfo || {};
-    const coverUrl = first(cover.urlDefault, cover.urlPre, cover.url,
-      ...(Array.isArray(cover.infoList) ? cover.infoList.map((entry) => entry && entry.url) : []));
+    const coverUrl = highImage(cover);
+    const coverPreviewUrl = previewImage(cover);
     const streamGroups = card.video?.media?.stream || {};
     const streams = Object.values(streamGroups).flatMap((value) =>
       Array.isArray(value) ? value : value && typeof value === 'object' ? [value] : []);
@@ -69,7 +81,7 @@ const String xhsFeedScript = r'''(() => {
     const media = coverUrl ? [{
       kind: card.type === 'video' ? 'video' : 'image',
       url: card.type === 'video' ? videoUrl : coverUrl,
-      previewUrl: coverUrl,
+      previewUrl: coverPreviewUrl || coverUrl,
       width: cover.width || 0,
       height: cover.height || 0,
       durationMilliseconds: card.video && card.video.capa ? (card.video.capa.duration || 0) * 1000 : 0,
@@ -82,7 +94,7 @@ const String xhsFeedScript = r'''(() => {
       title: card.displayTitle || '', summary: card.desc || '',
       author: {
         ref: {source: 'xhs', id: user.userId || '', token: feed.xsecToken || '', url: profileUrl},
-        id: user.userId || '', name: user.nickname || user.nickName || '未知用户', avatar: user.avatar || '',
+        id: user.userId || '', name: user.nickname || user.nickName || '未知用户', ...avatarFields(user),
       },
       stats: {
         likes: count(info.likedCount), comments: count(info.commentCount),
@@ -96,9 +108,10 @@ const String xhsFeedScript = r'''(() => {
 
 String xhsDetailScript(String feedId, String xsecToken) =>
     '''(() => {
-  const map = window.__INITIAL_STATE__?.note?.noteDetailMap;
-  const detail = map && map[${jsonEncode(feedId)}];
-  const note = detail && detail.note;
+  $xhsCommentStateHelpers
+  $xhsAvatarHelpers
+  const detail = noteDetail(${jsonEncode(feedId)});
+  const note = field(detail, 'note');
   if (!note) return '';
   const count = (value) => {
     const raw = String(value || '').replaceAll(',', '').trim();
@@ -106,16 +119,22 @@ String xhsDetailScript(String feedId, String xsecToken) =>
     const number = Number.parseFloat(raw.replace('万', ''));
     return Number.isFinite(number) ? Math.trunc(number * unit) : 0;
   };
-  const user = note.user || {};
-  const info = note.interactInfo || {};
-  const token = note.xsecToken || ${jsonEncode(xsecToken)};
+  const user = field(note, 'user') || {};
+  const info = field(note, 'interactInfo', 'interact_info') || {};
+  const token = field(note, 'xsecToken', 'xsec_token') || ${jsonEncode(xsecToken)};
   const first = (...values) => values.find((value) => typeof value === 'string' && value.length) || '';
+  const imageEntries = (image) => Array.isArray(image?.infoList) ? image.infoList.filter(Boolean) : [];
+  const sceneImage = (image, pattern) => imageEntries(image)
+    .find((entry) => pattern.test(String(entry.imageScene || entry.image_scene || entry.scene || '')))?.url || '';
+  const highImage = (image) => first(sceneImage(image, /ori|origin/i), image?.urlDefault,
+    sceneImage(image, /dft|default/i), image?.url,
+    ...imageEntries(image).map((entry) => entry.url), image?.urlPre);
+  const previewImage = (image) => first(image?.urlPre, sceneImage(image, /prv|preview/i),
+    image?.urlDefault, image?.url, ...imageEntries(image).map((entry) => entry.url));
   let media = Array.isArray(note.imageList) ? note.imageList.map((image) => ({
     kind: 'image',
-    url: first(image.urlDefault, image.urlPre, image.url,
-      ...(Array.isArray(image.infoList) ? image.infoList.map((entry) => entry && entry.url) : [])),
-    previewUrl: first(image.urlPre, image.urlDefault, image.url,
-      ...(Array.isArray(image.infoList) ? image.infoList.map((entry) => entry && entry.url) : [])),
+    url: highImage(image),
+    previewUrl: previewImage(image),
     width: image.width || 0, height: image.height || 0,
   })).filter((media) => media.url) : [];
   const streamGroups = note.video?.media?.stream || {};
@@ -131,39 +150,44 @@ String xhsDetailScript(String feedId, String xsecToken) =>
     durationMilliseconds: stream.duration || (note.video?.capa?.duration || 0) * 1000,
   }];
   const mapComment = (comment, parentId) => {
-    const commentUser = comment.userInfo || {};
-    const userToken = commentUser.xsecToken || token;
+    const root = commentRoot(commentId(comment));
+    comment = liveComment(root, commentId(comment))
+      || liveComment(root?.querySelector('.comment-item'), commentId(comment)) || comment;
+    const commentUser = field(comment, 'userInfo', 'user_info', 'user') || {};
+    const userId = field(commentUser, 'userId', 'user_id') || '';
+    const userToken = field(commentUser, 'xsecToken', 'xsec_token') || token;
     const pictureList = Array.isArray(comment.pictures) ? comment.pictures
-      : Array.isArray(comment.imageList) ? comment.imageList : [];
-    const replies = Array.isArray(comment.subComments)
-      ? comment.subComments.map((reply) => mapComment(reply, comment.id || parentId)) : [];
+      : list(field(comment, 'imageList', 'image_list'));
+    const replies = subComments(comment).map((reply) => mapComment(reply, commentId(comment) || parentId));
+    const created = field(comment, 'createTime', 'create_time');
     return {
-      ref: {source: 'xhs', id: comment.id || '', parentId, token},
+      ref: {source: 'xhs', id: commentId(comment), parentId, token},
       author: {
         ref: {
-          source: 'xhs', id: commentUser.userId || '', token: userToken,
-          url: commentUser.userId ? 'https://www.xiaohongshu.com/user/profile/'
-            + encodeURIComponent(commentUser.userId) + '?xsec_token=' + encodeURIComponent(userToken)
+          source: 'xhs', id: userId, token: userToken,
+          url: userId ? 'https://www.xiaohongshu.com/user/profile/'
+            + encodeURIComponent(userId) + '?xsec_token=' + encodeURIComponent(userToken)
             + '&xsec_source=pc_note' : '',
         },
-        id: commentUser.userId || '', name: commentUser.nickname || commentUser.nickName || '未知用户',
-        avatar: commentUser.avatar || '',
+        id: userId, name: commentUser.nickname || commentUser.nickName || '未知用户',
+        ...avatarFields(commentUser),
       },
-      body: comment.content || '', likes: count(comment.likeCount),
-      publishedAt: comment.createTime
-        ? new Date(comment.createTime > 1000000000000 ? comment.createTime : comment.createTime * 1000).toISOString()
+      body: field(comment, 'content') || '', likes: count(field(comment, 'likeCount', 'like_count')),
+      liked: typeof field(comment, 'liked', 'isLiked', 'is_liked') === 'boolean'
+        ? field(comment, 'liked', 'isLiked', 'is_liked') : null,
+      publishedAt: created
+        ? new Date(created > 1000000000000 ? created : created * 1000).toISOString()
         : null,
-      replyCount: count(comment.subCommentCount), replies,
+      replyCount: Math.max(count(field(comment, 'subCommentCount', 'sub_comment_count')), replies.length), replies,
       media: pictureList.map((picture) => ({
-        kind: 'image', url: picture.urlDefault || picture.urlPre || picture.url || '',
-        previewUrl: picture.urlDefault || picture.urlPre || picture.url || '',
+        kind: 'image', url: highImage(picture),
+        previewUrl: previewImage(picture),
         width: picture.width || 0, height: picture.height || 0,
       })).filter((media) => media.url),
     };
   };
-  const commentState = detail.comments || {};
-  const comments = Array.isArray(commentState.list)
-    ? commentState.list.map((comment) => mapComment(comment, note.noteId || ${jsonEncode(feedId)})) : [];
+  const state = commentState(detail);
+  const comments = rootComments(detail).map((comment) => mapComment(comment, note.noteId || ${jsonEncode(feedId)}));
   const reachedEnd = !!document.querySelector('.comments-container .end-container, .note-scroller .end-container');
   return JSON.stringify({
     ref: {
@@ -178,7 +202,7 @@ String xhsDetailScript(String feedId, String xsecToken) =>
         url: user.userId ? 'https://www.xiaohongshu.com/user/profile/' + encodeURIComponent(user.userId)
           + '?xsec_token=' + encodeURIComponent(token) + '&xsec_source=pc_note' : '',
       },
-      id: user.userId || '', name: user.nickname || user.nickName || '未知用户', avatar: user.avatar || '',
+      id: user.userId || '', name: user.nickname || user.nickName || '未知用户', ...avatarFields(user),
     },
     publishedAt: note.time ? new Date(note.time > 1000000000000 ? note.time : note.time * 1000).toISOString() : null,
     stats: {
@@ -186,98 +210,107 @@ String xhsDetailScript(String feedId, String xsecToken) =>
       favorites: count(info.collectedCount), shares: count(info.sharedCount),
     },
     media, comments, liked: info.liked === true, favorited: info.collected === true,
-    nextCursor: commentState.cursor || String(comments.length),
-    hasMore: commentState.hasMore === true || (!reachedEnd && comments.length > 0 && comments.length < count(info.commentCount)),
+    nextCursor: field(state, 'cursor') || String(comments.length),
+    hasMore: reachedEnd ? false : field(state, 'hasMore', 'has_more') !== undefined
+      ? !!field(state, 'hasMore', 'has_more')
+      : !reachedEnd && count(info.commentCount) > comments.length,
   });
 })()''';
 
 const String xhsLoadMoreCommentsScript = r'''(() => {
   const parents = [...document.querySelectorAll('.parent-comment')];
   const before = parents.length;
-  const visible = (element) => {
-    const rect = element.getBoundingClientRect();
-    const style = getComputedStyle(element);
-    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-  };
-  let clicked = 0;
-  for (const button of document.querySelectorAll('.show-more')) {
-    if (clicked >= 2) break;
-    if (visible(button)) {
-      button.click();
-      clicked++;
-    }
-  }
   const last = parents.at(-1);
   if (last) last.scrollIntoView({block: 'end', behavior: 'auto'});
   const scroller = ['.note-scroller', '.comments-container']
     .map((selector) => document.querySelector(selector))
     .find((element) => element && element.scrollHeight > element.clientHeight);
-  if (scroller) scroller.scrollBy({top: Math.max(520, scroller.clientHeight * 0.82), behavior: 'smooth'});
-  else window.scrollBy({top: Math.max(520, window.innerHeight * 0.82), behavior: 'smooth'});
-  return JSON.stringify({before, clicked});
+  if (scroller) scroller.scrollBy({top: Math.max(520, scroller.clientHeight * 0.82), behavior: 'auto'});
+  else window.scrollBy({top: Math.max(520, window.innerHeight * 0.82), behavior: 'auto'});
+  return JSON.stringify({before});
 })()''';
 
 String xhsFloorRepliesScript(String feedId, String commentId) =>
     '''(() => {
-  const detail = window.__INITIAL_STATE__?.note?.noteDetailMap?.[${jsonEncode(feedId)}];
-  const note = detail?.note || {};
-  const token = note.xsecToken || '';
+  $xhsCommentStateHelpers
+  $xhsAvatarHelpers
+  const detail = noteDetail(${jsonEncode(feedId)});
+  const note = field(detail, 'note') || {};
+  const token = field(note, 'xsecToken', 'xsec_token') || '';
   const count = (value) => {
     const raw = String(value || '').replaceAll(',', '').trim();
     const unit = raw.endsWith('万') ? 10000 : 1;
     const number = Number.parseFloat(raw.replace('万', ''));
     return Number.isFinite(number) ? Math.trunc(number * unit) : 0;
   };
-  const find = (list) => {
-    for (const comment of Array.isArray(list) ? list : []) {
-      if (comment?.id === ${jsonEncode(commentId)}) return comment;
-      const nested = find(comment?.subComments);
-      if (nested) return nested;
-    }
-    return null;
-  };
-  const parent = find(detail?.comments?.list);
+  const first = (...values) => values.find((value) => typeof value === 'string' && value.length) || '';
+  const imageEntries = (image) => Array.isArray(image?.infoList) ? image.infoList.filter(Boolean) : [];
+  const sceneImage = (image, pattern) => imageEntries(image)
+    .find((entry) => pattern.test(String(entry.imageScene || entry.image_scene || entry.scene || '')))?.url || '';
+  const highImage = (image) => first(sceneImage(image, /ori|origin/i), image?.urlDefault,
+    sceneImage(image, /dft|default/i), image?.url,
+    ...imageEntries(image).map((entry) => entry.url), image?.urlPre);
+  const previewImage = (image) => first(image?.urlPre, sceneImage(image, /prv|preview/i),
+    image?.urlDefault, image?.url, ...imageEntries(image).map((entry) => entry.url));
+  const targetId = ${jsonEncode(commentId)};
+  const root = commentRoot(targetId);
+  const parent = liveComment(root, targetId)
+    || liveComment(root?.querySelector('.comment-item'), targetId)
+    || findComment(rootComments(detail), targetId);
   if (!parent) return '';
   const mapComment = (comment) => {
-    const user = comment.userInfo || {};
-    const userToken = user.xsecToken || token;
+    const user = field(comment, 'userInfo', 'user_info', 'user') || {};
+    const userId = field(user, 'userId', 'user_id') || '';
+    const userToken = field(user, 'xsecToken', 'xsec_token') || token;
+    const pictureList = Array.isArray(comment.pictures) ? comment.pictures
+      : list(field(comment, 'imageList', 'image_list'));
+    const created = field(comment, 'createTime', 'create_time');
     return {
-      ref: {source: 'xhs', id: comment.id || '', parentId: ${jsonEncode(commentId)}, token},
+      ref: {source: 'xhs', id: commentId(comment), parentId: targetId, token},
       author: {
         ref: {
-          source: 'xhs', id: user.userId || '', token: userToken,
-          url: user.userId ? 'https://www.xiaohongshu.com/user/profile/' + encodeURIComponent(user.userId)
+          source: 'xhs', id: userId, token: userToken,
+          url: userId ? 'https://www.xiaohongshu.com/user/profile/' + encodeURIComponent(userId)
             + '?xsec_token=' + encodeURIComponent(userToken) + '&xsec_source=pc_note' : '',
         },
-        id: user.userId || '', name: user.nickname || user.nickName || '未知用户', avatar: user.avatar || '',
+        id: userId, name: user.nickname || user.nickName || '未知用户', ...avatarFields(user),
       },
-      body: comment.content || '', likes: count(comment.likeCount),
-      publishedAt: comment.createTime
-        ? new Date(comment.createTime > 1000000000000 ? comment.createTime : comment.createTime * 1000).toISOString()
+      body: field(comment, 'content') || '', likes: count(field(comment, 'likeCount', 'like_count')),
+      liked: typeof field(comment, 'liked', 'isLiked', 'is_liked') === 'boolean'
+        ? field(comment, 'liked', 'isLiked', 'is_liked') : null,
+      publishedAt: created
+        ? new Date(created > 1000000000000 ? created : created * 1000).toISOString()
         : null,
-      replyCount: count(comment.subCommentCount),
+      replyCount: count(field(comment, 'subCommentCount', 'sub_comment_count')),
+      media: pictureList.map((picture) => ({
+        kind: 'image', url: highImage(picture),
+        previewUrl: previewImage(picture),
+        width: picture.width || 0, height: picture.height || 0,
+      })).filter((media) => media.url),
     };
   };
-  const comments = Array.isArray(parent.subComments) ? parent.subComments.map(mapComment) : [];
-  const root = document.getElementById('comment-' + ${jsonEncode(commentId)});
-  const hasButton = !!root?.querySelector('.show-more');
+  const comments = subComments(parent).map(mapComment);
+  const more = field(parent, 'subCommentHasMore', 'sub_comment_has_more', 'hasMore', 'has_more');
   return JSON.stringify({
-    comments, nextCursor: String(comments.length),
-    hasMore: hasButton || count(parent.subCommentCount) > comments.length,
+    comments, nextCursor: JSON.stringify({count: comments.length,
+      cursor: field(parent, 'subCommentCursor', 'sub_comment_cursor') || ''}),
+    hasMore: more !== undefined ? !!more
+      : !!moreButton(root) || count(field(parent, 'subCommentCount', 'sub_comment_count')) > comments.length,
   });
 })()''';
 
 String xhsLoadMoreFloorRepliesScript(String commentId) =>
     '''(() => {
-  const root = document.getElementById('comment-' + ${jsonEncode(commentId)});
+  $xhsCommentStateHelpers
+  const targetId = ${jsonEncode(commentId)};
+  const root = commentRoot(targetId);
   if (!root) return false;
   root.scrollIntoView({block: 'center', behavior: 'auto'});
-  const buttons = [...root.querySelectorAll('.show-more')];
-  const button = buttons.find((element) => {
-    const rect = element.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
-  });
+  const button = moreButton(root);
   if (!button) return false;
+  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
+    button.dispatchEvent(new MouseEvent(type, {bubbles: true, view: window}));
+  }
   button.click();
   return true;
 })()''';
@@ -288,6 +321,7 @@ String xhsProfileScript(
   String section = 'note',
 ]) =>
     '''(() => {
+  $xhsAvatarHelpers
   const unwrap = (value) => value && value.value !== undefined
       ? value.value
       : value && value._value !== undefined ? value._value
@@ -309,13 +343,21 @@ String xhsProfileScript(
     return Number.isFinite(number) ? Math.trunc(number * unit) : 0;
   };
   const first = (...values) => values.find((value) => typeof value === 'string' && value.length) || '';
+  const imageEntries = (image) => Array.isArray(image?.infoList) ? image.infoList.filter(Boolean) : [];
+  const sceneImage = (image, pattern) => imageEntries(image)
+    .find((entry) => pattern.test(String(entry.imageScene || entry.image_scene || entry.scene || '')))?.url || '';
+  const highImage = (image) => first(sceneImage(image, /ori|origin/i), image?.urlDefault,
+    sceneImage(image, /dft|default/i), image?.url,
+    ...imageEntries(image).map((entry) => entry.url), image?.urlPre);
+  const previewImage = (image) => first(image?.urlPre, sceneImage(image, /prv|preview/i),
+    image?.urlDefault, image?.url, ...imageEntries(image).map((entry) => entry.url));
   const items = feeds.filter((feed) => feed && (!feed.modelType || feed.modelType === 'note')).map((feed) => {
     const card = feed.noteCard || {};
     const user = card.user || {};
     const cover = card.cover || {};
     const info = card.interactInfo || {};
-    const coverUrl = first(cover.urlDefault, cover.urlPre, cover.url,
-      ...(Array.isArray(cover.infoList) ? cover.infoList.map((entry) => entry && entry.url) : []));
+    const coverUrl = highImage(cover);
+    const coverPreviewUrl = previewImage(cover);
     const streamGroups = card.video?.media?.stream || {};
     const streams = Object.values(streamGroups).flatMap((value) =>
       Array.isArray(value) ? value : value && typeof value === 'object' ? [value] : []);
@@ -337,7 +379,7 @@ String xhsProfileScript(
       author: {
         ref: {source: 'xhs', id: user.userId || ${jsonEncode(userId)}, token, url: profileUrl},
         id: user.userId || ${jsonEncode(userId)}, name: user.nickname || user.nickName || basic.nickname || '未知用户',
-        avatar: user.avatar || basic.imageb || basic.images || '',
+        ...avatarFields(user, basic),
       },
       stats: {
         likes: count(info.likedCount), comments: count(info.commentCount),
@@ -345,7 +387,7 @@ String xhsProfileScript(
       },
       media: coverUrl ? [{
         kind: card.type === 'video' ? 'video' : 'image',
-        url: card.type === 'video' ? videoUrl : coverUrl, previewUrl: coverUrl,
+        url: card.type === 'video' ? videoUrl : coverUrl, previewUrl: coverPreviewUrl || coverUrl,
         width: cover.width || 0, height: cover.height || 0,
         durationMilliseconds: card.video?.capa ? (card.video.capa.duration || 0) * 1000 : 0,
       }] : [],
@@ -359,7 +401,7 @@ String xhsProfileScript(
       url: 'https://www.xiaohongshu.com/user/profile/' + encodeURIComponent(${jsonEncode(userId)})
         + '?xsec_token=' + encodeURIComponent(${jsonEncode(xsecToken)}) + '&xsec_source=pc_note',
     },
-    name: basic.nickname || '未知用户', avatar: basic.imageb || basic.images || '',
+    name: basic.nickname || '未知用户', ...avatarFields(basic),
     description: basic.desc || '', redId: basic.redId || '', location: basic.ipLocation || '',
     stats: interactions.map((entry) => ({name: entry.name || entry.type || '', count: String(entry.count || '0')})),
     items, nextCursor: items.length ? 'more' : '', hasMore: items.length > 0 && !end,
@@ -401,79 +443,65 @@ String xhsActivateChannelScript(String label) =>
   return true;
 })()''';
 
-String xhsInteractStateScript(String feedId, String field) =>
+// A profile page can contain follow controls for recommended accounts too.
+// Only inspect its own header, and reject ambiguous or mismatched pages.
+const _xhsProfileFollowHelpers = r'''
+  const label = (node) => (node.textContent || '').replace(/\s+/g, '').trim();
+  const available = (node) => !node.disabled
+    && node.getAttribute('aria-disabled') !== 'true'
+    && !node.closest('[hidden], [aria-hidden="true"]');
+  const followButtons = () => {
+    let pageId;
+    try {
+      const path = new URL(location.href).pathname;
+      const match = path.match(/^\/user\/profile\/([^/]+)\/?$/);
+      pageId = match ? decodeURIComponent(match[1]) : '';
+    } catch (_) { return []; }
+    if (!pageId || (expectedProfileId && pageId !== expectedProfileId)) return [];
+    const roots = [...document.querySelectorAll('.user-page .user, '
+      + '.user-profile .user-info, .user-info, .user-header, .profile-header')];
+    const candidates = [...new Set(roots.flatMap((root) =>
+      [...root.querySelectorAll('button, [role="button"], .follow-btn')]))];
+    return candidates.filter((node) => available(node)
+      && !node.closest('.note-item, .comment-item, .recommend-user, .user-list-item')
+      && ['关注', '已关注', '互相关注'].includes(label(node)));
+  };
+''';
+
+String xhsFollowStateScript([String profileId = '']) =>
     '''(() => {
-  const note = window.__INITIAL_STATE__?.note?.noteDetailMap?.[${jsonEncode(feedId)}]?.note;
-  const value = note?.interactInfo?.[${jsonEncode(field)}];
-  return typeof value === 'boolean' ? String(value) : '';
+  const expectedProfileId = ${jsonEncode(profileId)};
+  $_xhsProfileFollowHelpers
+  const buttons = followButtons();
+  if (buttons.length !== 1) return '';
+  return label(buttons[0]) === '关注' ? 'false' : 'true';
 })()''';
 
-String xhsClickScript(String selector) =>
+String xhsClickFollowScript(bool value, [String profileId = '']) =>
     '''(() => {
-  const element = document.querySelector(${jsonEncode(selector)});
-  if (!element) return false;
-  element.click();
-  return true;
-})()''';
-
-String xhsFollowStateScript() => r'''(() => {
-  const labels = [...document.querySelectorAll('button, [role="button"]')]
-    .map((node) => (node.textContent || '').replace(/\s+/g, '').trim());
-  if (labels.some((text) => ['已关注', '互相关注'].includes(text))) return 'true';
-  if (labels.some((text) => text === '关注')) return 'false';
-  return '';
-})()''';
-
-String xhsClickFollowScript(bool value) =>
-    '''(() => {
+  const expectedProfileId = ${jsonEncode(profileId)};
+  $_xhsProfileFollowHelpers
   const wanted = ${value ? "['关注']" : "['已关注', '互相关注']"};
-  const candidates = [...document.querySelectorAll('button, [role="button"]')];
-  const element = candidates.find((node) => wanted.includes((node.textContent || '').replace(/\\s+/g, '').trim()));
-  if (!element) return false;
-  element.click();
+  const buttons = followButtons();
+  if (buttons.length !== 1 || !wanted.includes(label(buttons[0]))) return false;
+  buttons[0].click();
   return true;
 })()''';
 
 const String xhsConfirmUnfollowScript = r'''(() => {
-  const candidates = [...document.querySelectorAll('button, [role="button"]')];
-  const element = candidates.find((node) => ['确认取消', '取消关注', '确定']
-    .includes((node.textContent || '').replace(/\s+/g, '').trim()));
-  if (!element) return false;
-  element.click();
-  return true;
-})()''';
-
-String xhsCommentScript(String body) =>
-    '''(() => {
-  const placeholder = document.querySelector('div.input-box div.content-edit span');
-  if (placeholder) placeholder.click();
-  const input = document.querySelector('div.input-box div.content-edit p.content-input');
-  if (!input) return false;
-  input.focus();
-  input.textContent = ${jsonEncode(body)};
-  input.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: ${jsonEncode(body)}}));
-  return true;
-})()''';
-
-const String xhsSubmitCommentScript = r'''(() => {
-  const button = document.querySelector('div.bottom button.submit');
-  if (!button || button.disabled) return false;
-  button.click();
-  return true;
-})()''';
-
-String xhsCommentVisibleScript(String body) =>
-    '''(() => {
-  const container = document.querySelector('.comments-container');
-  return container ? container.innerText.includes(${jsonEncode(body)}) : false;
-})()''';
-
-String xhsReplyTargetScript(String commentId) =>
-    '''(() => {
-  const comment = document.querySelector(${jsonEncode('#comment-$commentId')});
-  const button = comment && comment.querySelector('.right .interactions .reply');
-  if (!button) return false;
-  button.scrollIntoView({block: 'center'});
-  button.click();
+  const operation = window.__mixsocialXhsInteraction?.pending;
+  if (!operation || operation.action !== 'follow' || operation.value
+      || operation.status !== 'pending' || operation.sent) return false;
+  const dialogs = [...document.querySelectorAll('[role="dialog"], .reds-modal, '
+    + '.reds-dialog, .modal-container, .dialog-container, .confirm-container')]
+    .filter((dialog) => /取消关注|不再关注/.test(dialog.textContent || ''));
+  const candidates = [...new Set(dialogs.flatMap((dialog) =>
+    [...dialog.querySelectorAll('button, [role="button"], .confirm-btn')]))]
+    .filter((node) => !node.disabled && node.getAttribute('aria-disabled') !== 'true'
+      && !node.closest('[hidden], [aria-hidden="true"]')
+      && ['确认取消', '取消关注', '确定']
+        .includes((node.textContent || '').replace(/\s+/g, '').trim()));
+  if (candidates.length !== 1) return false;
+  candidates[0].click();
   return true;
 })()''';

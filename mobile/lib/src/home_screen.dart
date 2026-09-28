@@ -5,6 +5,8 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 
 import 'app_controller.dart';
+import 'content_link_dialog.dart';
+import 'content_links.dart';
 import 'design_system.dart';
 import 'detail_screen.dart';
 import 'feed_widgets.dart';
@@ -12,12 +14,18 @@ import 'forum_screen.dart';
 import 'login_screen.dart';
 import 'models.dart';
 import 'profile_screen.dart';
+import 'search_history.dart';
 import 'xhs_web_source.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key, required this.controller});
+  const HomeScreen({
+    super.key,
+    required this.controller,
+    this.searchHistoryStore,
+  });
 
   final MixsocialController controller;
+  final SearchHistoryStore? searchHistoryStore;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -28,9 +36,20 @@ class _HomeScreenState extends State<HomeScreen> {
       <SourceId, ScrollController>{};
   final ScrollController _searchScrollController = ScrollController();
   final TextEditingController _searchTextController = TextEditingController();
+  late final SearchHistoryStore _searchHistoryStore =
+      widget.searchHistoryStore ?? SearchHistoryStore();
+  final Map<SourceId, List<String>> _searchHistory = <SourceId, List<String>>{};
+  final Map<SourceId, int> _historyVersions = <SourceId, int>{};
+  late SourceId _historySource = widget.controller.source;
   Timer? _scrollSaveTimer;
   int _destination = 0;
   int _lastSearchNavigationId = 0;
+  int _searchNavigationVersion = 0;
+  final IncomingLinkReceiver _incomingLinks = IncomingLinkReceiver();
+  StreamSubscription<IncomingContentLink>? _linkSubscription;
+  final List<String> _pendingLinks = [];
+  bool _linkDialogOpen = false;
+  bool _drainingLinks = false;
 
   @override
   void initState() {
@@ -44,6 +63,68 @@ class _HomeScreenState extends State<HomeScreen> {
       () => _loadMoreNearEnd(_searchScrollController),
     );
     unawaited(_prepareScrollControllers());
+    unawaited(_loadSearchHistory(_historySource));
+    _linkSubscription = _incomingLinks.events.listen((event) {
+      if (_pendingLinks.length >= 8) _pendingLinks.removeAt(0);
+      _pendingLinks.add(event.text);
+      unawaited(_drainIncomingLinks());
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_incomingLinks.start());
+    });
+  }
+
+  Future<void> _drainIncomingLinks() async {
+    if (_drainingLinks || _linkDialogOpen || !mounted) return;
+    _drainingLinks = true;
+    try {
+      while (_pendingLinks.isNotEmpty && mounted) {
+        await _openContentLink(_pendingLinks.removeAt(0));
+      }
+    } finally {
+      _drainingLinks = false;
+    }
+  }
+
+  Future<void> _openContentLink([String text = '']) async {
+    if (_linkDialogOpen || !mounted) return;
+    _linkDialogOpen = true;
+    try {
+      final ref = await showDialog<ContentRef>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => ContentLinkDialog(initialText: text),
+      );
+      if (ref == null || !mounted) return;
+      await _openItemAsync(
+        FeedItem(
+          ref: ref,
+          title: switch (ref.source) {
+            SourceId.tieba => '贴吧帖子',
+            SourceId.xhs => '小红书笔记',
+            SourceId.zhihu => '知乎内容',
+            SourceId.all => '正在加载',
+          },
+          author: Author(
+            ref: ProfileRef(source: ref.source, id: ''),
+            id: '',
+            name: '正在加载',
+          ),
+          stats: const ItemStats(),
+        ),
+      );
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('未能打开帖子，请重试')));
+      }
+    } finally {
+      _linkDialogOpen = false;
+      if (mounted && !_drainingLinks && _pendingLinks.isNotEmpty) {
+        unawaited(_drainIncomingLinks());
+      }
+    }
   }
 
   Future<void> _prepareScrollControllers() async {
@@ -66,7 +147,63 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _controllerChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    final source = widget.controller.source;
+    if (source != _historySource) {
+      _historySource = source;
+      unawaited(_loadSearchHistory(source));
+    }
+    setState(() {});
+  }
+
+  Future<void> _loadSearchHistory(SourceId source) =>
+      _updateSearchHistory(source, () => _searchHistoryStore.read(source));
+
+  Future<void> _updateSearchHistory(
+    SourceId source,
+    Future<List<String>> Function() action, {
+    String? failureMessage,
+  }) async {
+    final version = (_historyVersions[source] ?? 0) + 1;
+    _historyVersions[source] = version;
+    try {
+      final history = await action();
+      if (!mounted || _historyVersions[source] != version) return;
+      setState(() => _searchHistory[source] = history);
+    } catch (_) {
+      // Local storage must never hold up an online search.
+      if (mounted &&
+          _destination == 1 &&
+          widget.controller.source == source &&
+          _historyVersions[source] == version &&
+          failureMessage != null) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failureMessage)));
+      }
+    }
+  }
+
+  void _removeSearchHistory(String query) {
+    final source = widget.controller.source;
+    unawaited(
+      _updateSearchHistory(
+        source,
+        () => _searchHistoryStore.remove(source, query),
+        failureMessage: '未能删除这条搜索历史，请重试',
+      ),
+    );
+  }
+
+  void _clearSearchHistory() {
+    final source = widget.controller.source;
+    unawaited(
+      _updateSearchHistory(
+        source,
+        () => _searchHistoryStore.clear(source),
+        failureMessage: '未能清空搜索历史，请重试',
+      ),
+    );
   }
 
   void _searchNavigationChanged() {
@@ -81,14 +218,21 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.of(context).popUntil((Route<dynamic> route) => route.isFirst);
     setState(() => _destination = 1);
     _searchTextController.text = request.query;
+    final version = ++_searchNavigationVersion;
     if (widget.controller.searchQuery.isNotEmpty) {
       await widget.controller.search('');
     }
+    if (!mounted || version != _searchNavigationVersion) return;
     await _selectSource(request.source, preserveSearch: true);
-    if (mounted) await _submitSearch(request.query);
+    if (mounted &&
+        version == _searchNavigationVersion &&
+        widget.controller.source == request.source) {
+      await _submitSearch(request.query);
+    }
   }
 
   void _searchInputChanged() {
+    _searchNavigationVersion++;
     if (mounted && _destination == 1) setState(() {});
   }
 
@@ -129,9 +273,32 @@ class _HomeScreenState extends State<HomeScreen> {
       source,
       preserveSearch: preserveSearch,
     );
-    if (preserveSearch && _searchScrollController.hasClients) {
+    if (mounted &&
+        widget.controller.source == source &&
+        preserveSearch &&
+        _searchScrollController.hasClients) {
       _searchScrollController.jumpTo(0);
     }
+  }
+
+  Future<void> _selectSearchSource(SourceId source) async {
+    final version = ++_searchNavigationVersion;
+    final query = _searchTextController.text.trim();
+    if (query.isEmpty && widget.controller.searchQuery.isNotEmpty) {
+      await widget.controller.search('');
+      if (!mounted || version != _searchNavigationVersion) return;
+    }
+    final selection = _selectSource(source, preserveSearch: true);
+    final submittedQuery = widget.controller.searchQuery;
+    if (submittedQuery.isNotEmpty) {
+      unawaited(
+        _updateSearchHistory(
+          source,
+          () => _searchHistoryStore.add(source, submittedQuery),
+        ),
+      );
+    }
+    await selection;
   }
 
   Future<void> _selectChannel(FeedChannel channel) async {
@@ -141,8 +308,25 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _submitSearch(String value) async {
+    if (!mounted) return;
+    _searchNavigationVersion++;
+    final query = value.trim();
+    _searchTextController.value = TextEditingValue(
+      text: query,
+      selection: TextSelection.collapsed(offset: query.length),
+    );
+    FocusManager.instance.primaryFocus?.unfocus();
     if (_searchScrollController.hasClients) _searchScrollController.jumpTo(0);
-    await widget.controller.search(value);
+    if (query.isNotEmpty) {
+      final source = widget.controller.source;
+      unawaited(
+        _updateSearchHistory(
+          source,
+          () => _searchHistoryStore.add(source, query),
+        ),
+      );
+    }
+    await widget.controller.search(query);
   }
 
   Future<void> _selectDestination(int value) async {
@@ -161,6 +345,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     final leavingSearch = _destination == 1 && value != 1;
+    _searchNavigationVersion++;
     setState(() => _destination = value);
     if (leavingSearch) await widget.controller.restoreFeed();
   }
@@ -240,6 +425,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    unawaited(_linkSubscription?.cancel());
+    _incomingLinks.dispose();
     widget.controller.removeListener(_controllerChanged);
     widget.controller.searchNavigationNotifier.removeListener(
       _searchNavigationChanged,
@@ -301,8 +488,10 @@ class _HomeScreenState extends State<HomeScreen> {
         textController: _searchTextController,
         scrollController: _searchScrollController,
         onSearch: _submitSearch,
-        onSourceSelected: (SourceId source) =>
-            _selectSource(source, preserveSearch: true),
+        onSourceSelected: _selectSearchSource,
+        history: _searchHistory[controller.source] ?? const <String>[],
+        onRemoveHistory: _removeSearchHistory,
+        onClearHistory: _clearSearchHistory,
         onOpen: _openItem,
         onAuthorTap: _openProfile,
         onForumTap: _openForum,
@@ -326,6 +515,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 title: Text(_destination == 0 ? 'Mixsocial' : '搜索'),
                 actions: _destination == 0
                     ? <Widget>[
+                        IconButton(
+                          tooltip: '打开帖子链接',
+                          onPressed: () => _openContentLink(),
+                          icon: const Icon(Icons.add_link),
+                        ),
                         IconButton(
                           tooltip: '贴吧目录',
                           onPressed: () => Navigator.push<void>(
@@ -425,6 +619,9 @@ class _SearchPage extends StatelessWidget {
     required this.scrollController,
     required this.onSearch,
     required this.onSourceSelected,
+    required this.history,
+    required this.onRemoveHistory,
+    required this.onClearHistory,
     required this.onOpen,
     required this.onAuthorTap,
     required this.onForumTap,
@@ -437,6 +634,9 @@ class _SearchPage extends StatelessWidget {
   final ScrollController scrollController;
   final ValueChanged<String> onSearch;
   final ValueChanged<SourceId> onSourceSelected;
+  final List<String> history;
+  final ValueChanged<String> onRemoveHistory;
+  final VoidCallback onClearHistory;
   final ValueChanged<FeedItem> onOpen;
   final ValueChanged<Author> onAuthorTap;
   final ValueChanged<String> onForumTap;
@@ -452,10 +652,17 @@ class _SearchPage extends StatelessWidget {
           child: SearchBar(
             key: const Key('feed-search-field'),
             controller: textController,
-            hintText: '搜索帖子、笔记或关键词',
-            leading: const Icon(Icons.search),
+            hintText: '搜索帖子、笔记、回答或关键词',
+            leading: IconButton(
+              tooltip: '搜索',
+              onPressed: textController.text.trim().isEmpty
+                  ? null
+                  : () => onSearch(textController.text),
+              icon: const Icon(Icons.search),
+            ),
             trailing: <Widget>[
-              if (controller.source != SourceId.tieba)
+              if (controller.source == SourceId.xhs ||
+                  controller.source == SourceId.all)
                 IconButton(
                   tooltip: controller.xhsSearchFilters.isDefault
                       ? '小红书搜索筛选'
@@ -485,10 +692,19 @@ class _SearchPage extends StatelessWidget {
           onSelected: onSourceSelected,
           compact: true,
         ),
-        if (controller.loading) const LinearProgressIndicator(minHeight: 2),
+        if (controller.loading && controller.searchQuery.isNotEmpty)
+          const LinearProgressIndicator(minHeight: 2),
         Expanded(
-          child: controller.searchQuery.isEmpty
-              ? const _SearchPrompt()
+          child:
+              controller.searchQuery.isEmpty ||
+                  textController.text.trim().isEmpty
+              ? SearchHistoryView(
+                  source: controller.source,
+                  queries: history,
+                  onSearch: onSearch,
+                  onRemove: onRemoveHistory,
+                  onClear: onClearHistory,
+                )
               : _FeedBody(
                   controller: controller,
                   scrollController: scrollController,
@@ -634,15 +850,77 @@ class _FilterDropdown extends StatelessWidget {
   }
 }
 
-class _SearchPrompt extends StatelessWidget {
-  const _SearchPrompt();
+class SearchHistoryView extends StatelessWidget {
+  const SearchHistoryView({
+    super.key,
+    required this.source,
+    required this.queries,
+    required this.onSearch,
+    required this.onRemove,
+    required this.onClear,
+  });
+
+  final SourceId source;
+  final List<String> queries;
+  final ValueChanged<String> onSearch;
+  final ValueChanged<String> onRemove;
+  final VoidCallback onClear;
 
   @override
   Widget build(BuildContext context) {
-    return const AppStateView(
-      icon: Icons.manage_search_rounded,
-      title: '搜索你真正想看的内容',
-      message: '贴吧会搜索全站主题，小红书会搜索公开笔记。可先选择平台，再输入关键词。',
+    if (queries.isEmpty) {
+      return const AppStateView(
+        icon: Icons.manage_search_rounded,
+        title: '搜索你真正想看的内容',
+        message: '贴吧会搜索全站主题，小红书会搜索公开笔记。可先选择平台，再输入关键词。',
+      );
+    }
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+      children: <Widget>[
+        Row(
+          children: <Widget>[
+            Expanded(
+              child: Text(
+                '${source.label}搜索历史',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+            ),
+            TextButton.icon(
+              key: const Key('clear-search-history'),
+              onPressed: onClear,
+              icon: const Icon(Icons.delete_outline, size: 18),
+              label: const Text('清空记录'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: queries
+              .map(
+                (query) => InputChip(
+                  key: ValueKey<String>('search-history-$query'),
+                  label: Text(
+                    query,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  tooltip: query,
+                  onPressed: () => onSearch(query),
+                  onDeleted: () => onRemove(query),
+                  deleteButtonTooltipMessage: '删除搜索记录：$query',
+                ),
+              )
+              .toList(),
+        ),
+        const SizedBox(height: 20),
+        Text(
+          '最近 ${SearchHistoryStore.limit} 条搜索，仅保存在本机',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ],
     );
   }
 }

@@ -46,6 +46,15 @@ func TestBrowseDetailAndComments(t *testing.T) {
 				"voteup_count": 12, "comment_count": 3,
 			})
 		case "/api/v4/comment_v5/answers/42/root_comment":
+			if request.URL.Query().Get("offset") == "10" {
+				writeTestJSON(t, writer, map[string]any{
+					"data": []any{map[string]any{
+						"id": 102, "content": "下一页评论", "author": map[string]any{"name": "Dave"},
+					}},
+					"paging": map[string]any{"is_end": true},
+				})
+				return
+			}
 			writeTestJSON(t, writer, map[string]any{
 				"data": []any{map[string]any{
 					"id": 100, "content": "<p>根评论</p>", "vote_count": 5, "child_comment_count": 1,
@@ -85,6 +94,10 @@ func TestBrowseDetailAndComments(t *testing.T) {
 	}
 	if len(detail.Comments) != 1 || detail.Comments[0].Body != "根评论" || len(detail.Comments[0].Replies) != 1 || detail.Comments[0].Replies[0].Body != "子回复" {
 		t.Fatalf("unexpected comments: %+v", detail.Comments)
+	}
+	next, err := provider.Comments(context.Background(), item.Ref, "10")
+	if err != nil || len(next.Comments) != 1 || next.Comments[0].Body != "下一页评论" {
+		t.Fatalf("Comments: page=%+v err=%v", next, err)
 	}
 }
 

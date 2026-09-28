@@ -123,6 +123,17 @@ func (t *Tieba) FollowingForumsWithRequest(requestID string) (string, error) {
 	return encode(forums, err)
 }
 
+func (t *Tieba) ProfileWithRequest(requestID, refJSON, cursor string) (string, error) {
+	var ref domain.ProfileRef
+	if err := json.Unmarshal([]byte(refJSON), &ref); err != nil {
+		return "", fmt.Errorf("无效的贴吧用户引用")
+	}
+	ctx, finish := t.begin(requestID)
+	defer finish()
+	page, err := t.snapshot().Profile(ctx, ref, cursor)
+	return encode(page, err)
+}
+
 func (t *Tieba) Detail(refJSON string) (string, error) {
 	return t.DetailWithRequest("", refJSON)
 }
