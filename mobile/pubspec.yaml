@@ -1,7 +1,7 @@
 name: mixsocial_mobile
 description: A local-first mobile client for the mixsocial sources.
 publish_to: none
-version: 0.2.0+2
+version: 0.3.0+3
 
 environment:
   sdk: ">=3.12.0 <4.0.0"
