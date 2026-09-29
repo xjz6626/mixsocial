@@ -29,6 +29,7 @@ class TiebaSource
   );
   TiebaSessionStatus get sessionStatus => _sessionStatus;
   Future<TiebaSessionStatus>? _loginCheck;
+  Future<void> _startup = Future<void>.value();
 
   static Future<TiebaSource> create({
     List<String> forums = const <String>[],
@@ -36,20 +37,27 @@ class TiebaSource
     const storage = FlutterSecureStorage();
     final source = TiebaSource._(storage);
     await MixsocialCore.configureTieba(forums: forums);
-    final credential = await storage.read(key: _credentialKey);
-    if (credential != null && credential.isNotEmpty) {
-      try {
-        source._sessionStatus = TiebaSessionStatus.fromResponse(
+    // Credential validation can take a full network round trip. Let the app
+    // paint cached content first; source operations wait for this future in
+    // the background before touching the native client.
+    source._startup = source._restoreStoredCredential();
+    return source;
+  }
+
+  Future<void> _restoreStoredCredential() async {
+    try {
+      final credential = await _secureStorage.read(key: _credentialKey);
+      if (credential != null && credential.isNotEmpty) {
+        _sessionStatus = TiebaSessionStatus.fromResponse(
           mapOf(jsonDecode(await MixsocialCore.loginTieba(credential))),
         );
-      } catch (error) {
-        source._sessionStatus = TiebaSessionStatus.fromFailure(error);
-        sourceDiagnostics.record(SourceId.tieba, '登录验证', error);
-        // Keep the credential so a transient network failure does not log the
-        // user out. The login screen can replace or explicitly clear it.
       }
+    } catch (error) {
+      _sessionStatus = TiebaSessionStatus.fromFailure(error);
+      sourceDiagnostics.record(SourceId.tieba, '登录验证', error);
+      // Keep the credential so a transient network failure does not log the
+      // user out. The login screen can replace or explicitly clear it.
     }
-    return source;
   }
 
   @override
@@ -66,42 +74,58 @@ class TiebaSource
   };
 
   @override
-  Future<FeedPage> browse(FeedChannel channel, {String cursor = ''}) async =>
-      FeedPage.decode(await MixsocialCore.browseTieba(channel.id, cursor));
+  Future<FeedPage> browse(FeedChannel channel, {String cursor = ''}) async {
+    await _startup;
+    return FeedPage.decode(await MixsocialCore.browseTieba(channel.id, cursor));
+  }
 
   @override
-  Future<FeedPage> search(String query, {String cursor = ''}) async =>
-      FeedPage.decode(await MixsocialCore.searchTieba(query, cursor));
+  Future<FeedPage> search(String query, {String cursor = ''}) async {
+    await _startup;
+    return FeedPage.decode(await MixsocialCore.searchTieba(query, cursor));
+  }
 
   @override
-  Future<FeedDetail> detail(ContentRef ref) async => FeedDetail.decode(
-    await MixsocialCore.tiebaDetail(jsonEncode(ref.toJson())),
-  );
+  Future<FeedDetail> detail(ContentRef ref) async {
+    await _startup;
+    return FeedDetail.decode(
+      await MixsocialCore.tiebaDetail(jsonEncode(ref.toJson())),
+    );
+  }
 
   @override
   Future<FeedPage> forum(
     String forum, {
     String cursor = '',
     int sortType = 0,
-  }) async => FeedPage.decode(
-    await MixsocialCore.forumTieba(forum, cursor, sortType: sortType),
-  );
+  }) async {
+    await _startup;
+    return FeedPage.decode(
+      await MixsocialCore.forumTieba(forum, cursor, sortType: sortType),
+    );
+  }
 
   @override
   Future<FeedPage> searchForum(
     String forum,
     String query, {
     String cursor = '',
-  }) async => FeedPage.decode(
-    await MixsocialCore.searchForumTieba(forum, query, cursor),
-  );
+  }) async {
+    await _startup;
+    return FeedPage.decode(
+      await MixsocialCore.searchForumTieba(forum, query, cursor),
+    );
+  }
 
   @override
-  Future<List<String>> followingForums() async =>
-      (jsonDecode(await MixsocialCore.followingForumsTieba()) as List<Object?>)
-          .map((Object? value) => value.toString())
-          .where((String value) => value.isNotEmpty)
-          .toList();
+  Future<List<String>> followingForums() async {
+    await _startup;
+    return (jsonDecode(await MixsocialCore.followingForumsTieba())
+            as List<Object?>)
+        .map((Object? value) => value.toString())
+        .where((String value) => value.isNotEmpty)
+        .toList();
+  }
 
   @override
   Future<ProfilePage> profile(
@@ -109,6 +133,7 @@ class TiebaSource
     ProfileSection section = ProfileSection.notes,
     String cursor = '',
   }) async {
+    await _startup;
     if (profile.source != SourceId.tieba ||
         !RegExp(r'^[1-9][0-9]*$').hasMatch(profile.id))
       throw ArgumentError('无效的贴吧用户编号');
@@ -143,22 +168,28 @@ class TiebaSource
     String cursor = '',
     bool reverse = false,
     bool onlyOriginalPoster = false,
-  }) async => FeedDetail.decode(
-    await MixsocialCore.tiebaDetailPage(
-      jsonEncode(ref.toJson()),
-      cursor,
-      reverse: reverse,
-      onlyOriginalPoster: onlyOriginalPoster,
-    ),
-  );
+  }) async {
+    await _startup;
+    return FeedDetail.decode(
+      await MixsocialCore.tiebaDetailPage(
+        jsonEncode(ref.toJson()),
+        cursor,
+        reverse: reverse,
+        onlyOriginalPoster: onlyOriginalPoster,
+      ),
+    );
+  }
 
   @override
   Future<FeedCommentPage> floorReplies(
     ContentRef floor, {
     String cursor = '',
-  }) async => FeedCommentPage.decode(
-    await MixsocialCore.floorRepliesTieba(jsonEncode(floor.toJson()), cursor),
-  );
+  }) async {
+    await _startup;
+    return FeedCommentPage.decode(
+      await MixsocialCore.floorRepliesTieba(jsonEncode(floor.toJson()), cursor),
+    );
+  }
 
   Future<WebViewController> interactionController(ContentRef ref) async {
     if (ref.source != SourceId.tieba || ref.id.trim().isEmpty) {
@@ -229,6 +260,7 @@ class TiebaSource
   }
 
   Future<void> loginWithCredential(String credential) async {
+    await _startup;
     final value = credential.trim();
     if (value.isEmpty) throw ArgumentError('BDUSS 不能为空');
     _sessionStatus = TiebaSessionStatus.fromResponse(
@@ -246,6 +278,7 @@ class TiebaSource
   }
 
   Future<TiebaSessionStatus> _checkLogin() async {
+    await _startup;
     try {
       final value = await _secureStorage.read(key: _credentialKey);
       if (value == null || value.isEmpty) {
@@ -281,7 +314,34 @@ class TiebaSource
     return value != null && value.isNotEmpty;
   }
 
+  /// Only used by the user-initiated, end-to-end encrypted device transfer.
+  Future<String?> exportCredentialForTransfer() async {
+    final value = (await _secureStorage.read(key: _credentialKey))?.trim();
+    return value == null || value.isEmpty ? null : value;
+  }
+
+  /// Persists first so a temporary network failure cannot lose the transfer.
+  Future<void> importCredentialFromTransfer(String credential) async {
+    await _startup;
+    final value = credential.trim();
+    if (value.isEmpty ||
+        value.length > 8192 ||
+        value.contains(RegExp(r'[\r\n]'))) {
+      throw const FormatException('贴吧登录凭据无效');
+    }
+    await _secureStorage.write(key: _credentialKey, value: value);
+    try {
+      _sessionStatus = TiebaSessionStatus.fromResponse(
+        mapOf(jsonDecode(await MixsocialCore.loginTieba(value))),
+      );
+    } catch (error) {
+      _sessionStatus = TiebaSessionStatus.fromFailure(error);
+      sourceDiagnostics.record(SourceId.tieba, '迁移后登录验证', error);
+    }
+  }
+
   Future<void> logout() async {
+    await _startup;
     await MixsocialCore.clearTiebaCredential();
     _sessionStatus = const TiebaSessionStatus(TiebaSessionState.signedOut);
     await _secureStorage.delete(key: _credentialKey);

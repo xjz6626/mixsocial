@@ -149,6 +149,15 @@ class LocalSettings {
     return write;
   }
 
+  Future<void> mergeFollowingProfiles(Iterable<String> values) async {
+    final profiles = await followingProfiles();
+    profiles.addAll(values.where((value) => value.trim().isNotEmpty));
+    await _preferences.setStringList(
+      'relationships.following',
+      profiles.toList()..sort(),
+    );
+  }
+
   Future<List<FeedItem>> historyItems() =>
       _database?.historyItems() ?? _readItems('library.history');
 

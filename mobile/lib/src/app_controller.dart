@@ -82,25 +82,35 @@ class MixsocialController extends ChangeNotifier {
       zhihu: values[2] as ZhihuSource,
       settings: values[3] as LocalSettings,
     );
-    controller.layout = await controller.settings.layoutFor(SourceId.all);
-    controller.density = await controller.settings.feedDensity();
-    controller.themePreferenceNotifier.value = await controller.settings
-        .themePreference();
+    // These reads are independent. Restoring them together keeps disk-backed
+    // preferences and caches off the critical path as much as possible.
+    final restored = await Future.wait<Object>(<Future<Object>>[
+      controller.settings.layoutFor(SourceId.all),
+      controller.settings.feedDensity(),
+      controller.settings.themePreference(),
+      controller.settings.blockedForums(),
+      controller.settings.blockedKeywords(),
+      controller.settings.hideVideos(),
+      controller.settings.hideMedia(),
+      controller.settings.savedItems(),
+      controller.settings.followingProfiles(),
+      controller.settings.feedCache(SourceId.all, FeedChannel.recommend),
+    ]);
+    controller.layout = restored[0] as FeedLayout;
+    controller.density = restored[1] as FeedDensity;
+    controller.themePreferenceNotifier.value =
+        restored[2] as AppThemePreference;
     controller._filters = ContentFilters(
-      blockedForums: await controller.settings.blockedForums(),
-      blockedKeywords: await controller.settings.blockedKeywords(),
-      hideVideos: await controller.settings.hideVideos(),
-      hideMedia: await controller.settings.hideMedia(),
+      blockedForums: restored[3] as Set<String>,
+      blockedKeywords: restored[4] as Set<String>,
+      hideVideos: restored[5] as bool,
+      hideMedia: restored[6] as bool,
     );
-    controller._savedKeys = (await controller.settings.savedItems())
+    controller._savedKeys = (restored[7] as List<FeedItem>)
         .map((FeedItem item) => item.key)
         .toSet();
-    controller._followingProfiles = await controller.settings
-        .followingProfiles();
-    final cached = await controller.settings.feedCache(
-      SourceId.all,
-      FeedChannel.recommend,
-    );
+    controller._followingProfiles = restored[8] as Set<String>;
+    final cached = restored[9] as List<FeedItem>;
     controller.items = controller.prepareItems(cached);
     if (controller.items.isNotEmpty) {
       controller.notices = const <String>['已恢复上次内容，正在后台更新'];
@@ -108,7 +118,13 @@ class MixsocialController extends ChangeNotifier {
     return controller;
   }
 
-  Future<void> refresh({bool clearItems = false}) async {
+  Future<void> manualRefresh() =>
+      refresh(clearItems: true, restoreCacheOnFailure: false);
+
+  Future<void> refresh({
+    bool clearItems = false,
+    bool restoreCacheOnFailure = true,
+  }) async {
     final requestVersion = ++_requestVersion;
     final selectedSource = source;
     final selectedChannel = channel;
@@ -160,7 +176,7 @@ class MixsocialController extends ChangeNotifier {
         _nextCursors = previousCursors;
         _moreSources = previousMoreSources;
         notices = const <String>['网络更新失败，当前仍显示已有内容'];
-      } else if (query.isEmpty) {
+      } else if (restoreCacheOnFailure && query.isEmpty) {
         final cached = await settings.feedCache(
           selectedSource,
           selectedChannel,
@@ -513,6 +529,23 @@ class MixsocialController extends ChangeNotifier {
     themePreferenceNotifier.value = value;
     notifyListeners();
     await settings.setThemePreference(value);
+  }
+
+  /// Reloads preferences written by a device migration without a network fetch.
+  Future<void> reloadLocalPreferences() async {
+    layout = await settings.layoutFor(source);
+    density = await settings.feedDensity();
+    themePreferenceNotifier.value = await settings.themePreference();
+    _filters = ContentFilters(
+      blockedForums: await settings.blockedForums(),
+      blockedKeywords: await settings.blockedKeywords(),
+      hideVideos: await settings.hideVideos(),
+      hideMedia: await settings.hideMedia(),
+    );
+    _savedKeys = (await settings.savedItems()).map((item) => item.key).toSet();
+    _followingProfiles = await settings.followingProfiles();
+    items = prepareItems(items);
+    notifyListeners();
   }
 
   Future<void> like(ContentRef ref, bool value) async {

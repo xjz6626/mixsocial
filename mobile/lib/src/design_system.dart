@@ -53,13 +53,22 @@ abstract final class AppRadii {
   static const double lg = 22;
 }
 
-ThemeData buildAppTheme(Brightness brightness) {
+/// Stable source accents used anywhere platforms need quick visual identity.
+abstract final class AppSourceColors {
+  static const Color xhs = Color(0xffe9274f);
+  static const Color tieba = Color(0xffc45414);
+  static const Color zhihu = Color(0xff056de8);
+}
+
+ThemeData buildAppTheme(Brightness brightness, {ColorScheme? dynamicScheme}) {
   final dark = brightness == Brightness.dark;
-  final colors = ColorScheme.fromSeed(
-    seedColor: const Color(0xff4263eb),
-    brightness: brightness,
-    dynamicSchemeVariant: DynamicSchemeVariant.fidelity,
-  );
+  final colors =
+      dynamicScheme?.copyWith(brightness: brightness) ??
+      ColorScheme.fromSeed(
+        seedColor: const Color(0xff4263eb),
+        brightness: brightness,
+        dynamicSchemeVariant: DynamicSchemeVariant.fidelity,
+      );
   final base = ThemeData(
     colorScheme: colors,
     brightness: brightness,

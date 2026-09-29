@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/material.dart';
 
 import 'app_controller.dart';
@@ -20,11 +21,9 @@ class _MixsocialAppState extends State<MixsocialApp> {
 
   Future<MixsocialController> _createController() async {
     final controller = widget.controller ?? await MixsocialController.create();
-    if (controller.items.isEmpty) {
-      await controller.refresh();
-    } else {
-      unawaited(controller.refresh());
-    }
+    // Never hold the first frame for a remote platform. Cached content or the
+    // loading skeleton appears immediately while sources refresh behind it.
+    unawaited(controller.refresh());
     return controller;
   }
 
@@ -68,15 +67,22 @@ class _MixsocialAppState extends State<MixsocialApp> {
     required Widget home,
     ThemeMode themeMode = ThemeMode.system,
   }) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'Mixsocial',
-      theme: buildAppTheme(Brightness.light),
-      darkTheme: buildAppTheme(Brightness.dark),
-      themeMode: themeMode,
-      themeAnimationDuration: const Duration(milliseconds: 280),
-      themeAnimationCurve: Curves.easeOutCubic,
-      home: home,
+    return DynamicColorBuilder(
+      builder: (ColorScheme? lightDynamic, ColorScheme? darkDynamic) =>
+          MaterialApp(
+            debugShowCheckedModeBanner: false,
+            restorationScopeId: 'mixsocial',
+            title: 'Mixsocial',
+            theme: buildAppTheme(Brightness.light, dynamicScheme: lightDynamic),
+            darkTheme: buildAppTheme(
+              Brightness.dark,
+              dynamicScheme: darkDynamic,
+            ),
+            themeMode: themeMode,
+            themeAnimationDuration: const Duration(milliseconds: 280),
+            themeAnimationCurve: Curves.easeOutCubic,
+            home: home,
+          ),
     );
   }
 }

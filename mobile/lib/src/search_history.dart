@@ -40,6 +40,12 @@ class SearchHistoryStore {
     return const <String>[];
   });
 
+  Future<void> merge(SourceId source, Iterable<String> values) async {
+    for (final value in values.toList().reversed) {
+      await add(source, value);
+    }
+  }
+
   Future<List<String>> _read(SourceId source) async {
     try {
       return _normalize(

@@ -37,7 +37,7 @@ env:
 
 jobs:
   release:
-    name: Build and publish Android APK
+    name: Build and publish Android packages
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -96,6 +96,10 @@ jobs:
 
           echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
           echo "apk_name=mixsocial-android-$release_tag.apk" >> "$GITHUB_OUTPUT"
+          echo "arm64_name=mixsocial-android-$release_tag-arm64-v8a.apk" >> "$GITHUB_OUTPUT"
+          echo "x86_64_name=mixsocial-android-$release_tag-x86_64.apk" >> "$GITHUB_OUTPUT"
+          echo "aab_name=mixsocial-android-$release_tag.aab" >> "$GITHUB_OUTPUT"
+          echo "checksums_name=mixsocial-android-$release_tag-SHA256SUMS.txt" >> "$GITHUB_OUTPUT"
           echo "allow_debug_signing=$allow_debug_signing" >> "$GITHUB_OUTPUT"
 
       - name: Restore Gradle Wrapper for legacy tags
@@ -247,7 +251,7 @@ jobs:
           echo "kind=debug" >> "$GITHUB_OUTPUT"
           echo "keystore_path=" >> "$GITHUB_OUTPUT"
 
-      - name: Build release APK
+      - name: Build release APKs and App Bundle
         env:
           ANDROID_KEYSTORE_PATH: ${{ steps.signing.outputs.keystore_path }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -258,25 +262,44 @@ jobs:
           set -Eeuo pipefail
           cd mobile
           flutter build apk --release
+          flutter build apk --release --split-per-abi --target-platform android-arm64,android-x64
+          flutter build appbundle --release
 
-      - name: Verify and package APK
+      - name: Verify and package Android builds
         env:
           APK_NAME: ${{ steps.release.outputs.apk_name }}
+          ARM64_NAME: ${{ steps.release.outputs.arm64_name }}
+          X86_64_NAME: ${{ steps.release.outputs.x86_64_name }}
+          AAB_NAME: ${{ steps.release.outputs.aab_name }}
+          CHECKSUMS_NAME: ${{ steps.release.outputs.checksums_name }}
         shell: bash
         run: |
           set -Eeuo pipefail
-          source_apk="mobile/build/app/outputs/flutter-apk/app-release.apk"
           mkdir -p dist
-          cp "$source_apk" "dist/$APK_NAME"
+          cp mobile/build/app/outputs/flutter-apk/app-release.apk "dist/$APK_NAME"
+          cp mobile/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk "dist/$ARM64_NAME"
+          cp mobile/build/app/outputs/flutter-apk/app-x86_64-release.apk "dist/$X86_64_NAME"
+          cp mobile/build/app/outputs/bundle/release/app-release.aab "dist/$AAB_NAME"
           ./mobile/scripts/verify_android_apk.sh "dist/$APK_NAME"
+          ./mobile/scripts/verify_android_apk.sh "dist/$ARM64_NAME" arm64-v8a
+          ./mobile/scripts/verify_android_apk.sh "dist/$X86_64_NAME" x86_64
+          jarsigner -verify "dist/$AAB_NAME" >/dev/null 2>&1
+          unzip -l "dist/$AAB_NAME" > "$RUNNER_TEMP/aab-contents.txt"
+          grep -q 'base/lib/arm64-v8a/libgojni.so' "$RUNNER_TEMP/aab-contents.txt"
+          grep -q 'base/lib/x86_64/libgojni.so' "$RUNNER_TEMP/aab-contents.txt"
+          grep -q 'BUNDLE-METADATA/com.android.tools.build.profiles/baseline.prof' "$RUNNER_TEMP/aab-contents.txt"
           cd dist
-          sha256sum "$APK_NAME" > "$APK_NAME.sha256"
+          sha256sum "$APK_NAME" "$ARM64_NAME" "$X86_64_NAME" "$AAB_NAME" > "$CHECKSUMS_NAME"
 
       - name: Create release and upload assets
         uses: actions/github-script@v9
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           APK_NAME: ${{ steps.release.outputs.apk_name }}
+          ARM64_NAME: ${{ steps.release.outputs.arm64_name }}
+          X86_64_NAME: ${{ steps.release.outputs.x86_64_name }}
+          AAB_NAME: ${{ steps.release.outputs.aab_name }}
+          CHECKSUMS_NAME: ${{ steps.release.outputs.checksums_name }}
           SIGNING_KIND: ${{ steps.signing.outputs.kind }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -286,6 +309,10 @@ jobs:
             const { owner, repo } = context.repo;
             const tag = process.env.RELEASE_TAG;
             const apkName = process.env.APK_NAME;
+            const arm64Name = process.env.ARM64_NAME;
+            const x86Name = process.env.X86_64_NAME;
+            const aabName = process.env.AAB_NAME;
+            const checksumsName = process.env.CHECKSUMS_NAME;
             const signingKind = process.env.SIGNING_KIND;
             let release;
 
@@ -298,7 +325,7 @@ jobs:
                 repo,
                 tag_name: tag,
                 name: `Mixsocial ${tag}`,
-                body: `Android preview build. Signing: ${signingKind}. SHA-256 is attached.`,
+                body: `Android preview build. Signing: ${signingKind}. Includes a universal APK, smaller per-ABI APKs, an Android App Bundle, and SHA-256 checksums.`,
                 draft: true,
                 prerelease: true,
                 generate_release_notes: true,
@@ -307,7 +334,10 @@ jobs:
 
             const assets = [
               { file: path.join('dist', apkName), name: apkName, type: 'application/vnd.android.package-archive' },
-              { file: path.join('dist', `${apkName}.sha256`), name: `${apkName}.sha256`, type: 'text/plain' },
+              { file: path.join('dist', arm64Name), name: arm64Name, type: 'application/vnd.android.package-archive' },
+              { file: path.join('dist', x86Name), name: x86Name, type: 'application/vnd.android.package-archive' },
+              { file: path.join('dist', aabName), name: aabName, type: 'application/octet-stream' },
+              { file: path.join('dist', checksumsName), name: checksumsName, type: 'text/plain' },
             ];
             const existingAssets = (await github.rest.repos.listReleaseAssets({
               owner,
@@ -343,6 +373,7 @@ jobs:
               repo,
               release_id: release.id,
               name: `Mixsocial ${tag}`,
+              body: `Android preview build. Signing: ${signingKind}. Includes a universal APK, smaller per-ABI APKs, an Android App Bundle, and SHA-256 checksums.`,
               draft: false,
               prerelease: true,
             });

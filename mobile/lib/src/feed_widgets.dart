@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'design_system.dart';
 import 'models.dart';
 import 'network_media.dart';
 
@@ -98,9 +99,9 @@ class SourceBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = switch (source) {
-      SourceId.xhs => (const Color(0xffe9274f), Colors.white),
-      SourceId.tieba => (const Color(0xff3478f6), Colors.white),
-      SourceId.zhihu => (const Color(0xff056de8), Colors.white),
+      SourceId.xhs => (AppSourceColors.xhs, Colors.white),
+      SourceId.tieba => (AppSourceColors.tieba, Colors.white),
+      SourceId.zhihu => (AppSourceColors.zhihu, Colors.white),
       SourceId.all => (
         Theme.of(context).colorScheme.primaryContainer,
         Theme.of(context).colorScheme.onPrimaryContainer,

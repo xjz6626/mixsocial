@@ -208,6 +208,48 @@ class XhsWebSource
     }
   });
 
+  /// Returns cookies only for the Xiaohongshu origin. Callers must protect the
+  /// result as account credentials and never log it or place it directly in QR.
+  Future<List<Map<String, String>>> exportCookiesForTransfer() async {
+    final cookies = await _cookieManager.getCookies(
+      domain: Uri.parse('https://www.xiaohongshu.com/'),
+    );
+    final seen = <String>{};
+    return <Map<String, String>>[
+      for (final cookie in cookies)
+        if (cookie.name.trim().isNotEmpty &&
+            cookie.value.isNotEmpty &&
+            seen.add(cookie.name.trim()))
+          <String, String>{'name': cookie.name.trim(), 'value': cookie.value},
+    ];
+  }
+
+  Future<void> importCookiesFromTransfer(
+    Iterable<Map<String, String>> cookies,
+  ) async {
+    for (final cookie in cookies) {
+      final name = cookie['name'] ?? '';
+      final value = cookie['value'] ?? '';
+      if (!RegExp(r'^[!#$%&\x27*+.^_`|~0-9A-Za-z-]{1,256}$').hasMatch(name) ||
+          value.isEmpty ||
+          value.length > 16384 ||
+          value.contains(RegExp(r'[\r\n]'))) {
+        throw const FormatException('小红书 Cookie 无效');
+      }
+      await _cookieManager.setCookie(
+        WebViewCookie(
+          name: name,
+          value: value,
+          domain: 'www.xiaohongshu.com',
+          path: '/',
+        ),
+      );
+    }
+    _activeListKey = null;
+    _activeDetailId = null;
+    _activeProfileKey = null;
+  }
+
   @override
   Future<FeedPage> browse(FeedChannel channel, {String cursor = ''}) =>
       _exclusive(() async {

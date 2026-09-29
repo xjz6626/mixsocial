@@ -24,6 +24,7 @@ class ZhihuSource implements FeedSource, ContentInteractor, ThreadPageReader {
     TiebaSessionState.signedOut,
   );
   Future<TiebaSessionStatus>? _loginCheck;
+  Future<void> _startup = Future<void>.value();
 
   TiebaSessionStatus get sessionStatus => _sessionStatus;
 
@@ -36,19 +37,25 @@ class ZhihuSource implements FeedSource, ContentInteractor, ThreadPageReader {
     final storage = secureStorage ?? const FlutterSecureStorage();
     final source = ZhihuSource._(storage);
     await MixsocialCore.configureZhihu();
-    final credential = await storage.read(key: _credentialKey);
-    if (credential != null && credential.isNotEmpty) {
-      try {
-        source._sessionStatus = TiebaSessionStatus.fromResponse(
+    // Restoring the cookie includes remote validation. Keep it behind source
+    // operations so cached content and navigation can render immediately.
+    source._startup = source._restoreStoredCredential();
+    return source;
+  }
+
+  Future<void> _restoreStoredCredential() async {
+    try {
+      final credential = await _secureStorage.read(key: _credentialKey);
+      if (credential != null && credential.isNotEmpty) {
+        _sessionStatus = TiebaSessionStatus.fromResponse(
           mapOf(jsonDecode(await MixsocialCore.loginZhihu(credential))),
         );
-      } catch (error) {
-        source._sessionStatus = TiebaSessionStatus.fromFailure(error);
-        sourceDiagnostics.record(SourceId.zhihu, '登录验证', error);
-        // Keep the cookie through transient network or risk-control failures.
       }
+    } catch (error) {
+      _sessionStatus = TiebaSessionStatus.fromFailure(error);
+      sourceDiagnostics.record(SourceId.zhihu, '登录验证', error);
+      // Keep the cookie through transient network or risk-control failures.
     }
-    return source;
   }
 
   @override
@@ -70,18 +77,21 @@ class ZhihuSource implements FeedSource, ContentInteractor, ThreadPageReader {
   @override
   Future<FeedPage> browse(FeedChannel channel, {String cursor = ''}) async {
     _requireEnabled();
+    await _startup;
     return FeedPage.decode(await MixsocialCore.browseZhihu(channel.id, cursor));
   }
 
   @override
   Future<FeedPage> search(String query, {String cursor = ''}) async {
     _requireEnabled();
+    await _startup;
     return FeedPage.decode(await MixsocialCore.searchZhihu(query, cursor));
   }
 
   @override
   Future<FeedDetail> detail(ContentRef ref) async {
     _validateRef(ref);
+    await _startup;
     return FeedDetail.decode(
       await MixsocialCore.zhihuDetail(jsonEncode(ref.toJson())),
     );
@@ -95,6 +105,7 @@ class ZhihuSource implements FeedSource, ContentInteractor, ThreadPageReader {
     bool onlyOriginalPoster = false,
   }) async {
     _validateRef(ref);
+    await _startup;
     if (cursor.isEmpty) return detail(ref);
     final page = FeedCommentPage.decode(
       await MixsocialCore.zhihuComments(jsonEncode(ref.toJson()), cursor),
@@ -121,6 +132,7 @@ class ZhihuSource implements FeedSource, ContentInteractor, ThreadPageReader {
   @override
   Future<void> like(ContentRef ref, bool value) async {
     _validateRef(ref);
+    await _startup;
     await MixsocialCore.likeZhihu(jsonEncode(ref.toJson()), value);
   }
 
@@ -132,12 +144,14 @@ class ZhihuSource implements FeedSource, ContentInteractor, ThreadPageReader {
   @override
   Future<void> comment(ContentRef ref, String body) async {
     _validateRef(ref);
+    await _startup;
     await MixsocialCore.commentZhihu(jsonEncode(ref.toJson()), body);
   }
 
   @override
   Future<void> reply(ContentRef ref, ContentRef comment, String body) async {
     _validateRef(ref);
+    await _startup;
     if (comment.source != SourceId.zhihu || comment.id.trim().isEmpty) {
       throw ArgumentError('知乎回复目标无效');
     }
@@ -150,6 +164,7 @@ class ZhihuSource implements FeedSource, ContentInteractor, ThreadPageReader {
 
   Future<void> loginWithCredential(String credential) async {
     _requireEnabled();
+    await _startup;
     final value = credential.trim();
     if (value.isEmpty) throw ArgumentError('知乎 Cookie 不能为空');
     _sessionStatus = TiebaSessionStatus.fromResponse(
@@ -172,6 +187,7 @@ class ZhihuSource implements FeedSource, ContentInteractor, ThreadPageReader {
   }
 
   Future<TiebaSessionStatus> _checkLogin() async {
+    await _startup;
     try {
       final value = await _secureStorage.read(key: _credentialKey);
       if (value == null || value.isEmpty) {
@@ -214,8 +230,37 @@ class ZhihuSource implements FeedSource, ContentInteractor, ThreadPageReader {
     return value != null && value.isNotEmpty;
   }
 
+  /// Only used by the user-initiated, end-to-end encrypted device transfer.
+  Future<String?> exportCredentialForTransfer() async {
+    if (!enabled) return null;
+    final value = (await _secureStorage.read(key: _credentialKey))?.trim();
+    return value == null || value.isEmpty ? null : value;
+  }
+
+  /// Persists first so a temporary network failure cannot lose the transfer.
+  Future<void> importCredentialFromTransfer(String credential) async {
+    _requireEnabled();
+    await _startup;
+    final value = credential.trim();
+    if (value.isEmpty ||
+        value.length > 65536 ||
+        value.contains(RegExp(r'[\r\n]'))) {
+      throw const FormatException('知乎登录凭据无效');
+    }
+    await _secureStorage.write(key: _credentialKey, value: value);
+    try {
+      _sessionStatus = TiebaSessionStatus.fromResponse(
+        mapOf(jsonDecode(await MixsocialCore.loginZhihu(value))),
+      );
+    } catch (error) {
+      _sessionStatus = TiebaSessionStatus.fromFailure(error);
+      sourceDiagnostics.record(SourceId.zhihu, '迁移后登录验证', error);
+    }
+  }
+
   Future<void> logout() async {
     if (!enabled) return;
+    await _startup;
     await MixsocialCore.clearZhihuCredential();
     _sessionStatus = const TiebaSessionStatus(TiebaSessionState.signedOut);
     await _secureStorage.delete(key: _credentialKey);

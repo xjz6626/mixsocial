@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mixsocial_mobile/src/design_system.dart';
 import 'package:mixsocial_mobile/src/feed_widgets.dart';
 import 'package:mixsocial_mobile/src/home_screen.dart';
 import 'package:mixsocial_mobile/src/models.dart';
@@ -120,5 +121,10 @@ void main() {
     expect(compactCount(10000), '1.0万');
     expect(compactCount(123000), '12万');
     expect(compactCount(100000000), '1.0亿');
+  });
+
+  test('source accents keep Tieba and Zhihu visually distinct', () {
+    expect(AppSourceColors.tieba, isNot(AppSourceColors.zhihu));
+    expect(AppSourceColors.tieba, const Color(0xffc45414));
   });
 }

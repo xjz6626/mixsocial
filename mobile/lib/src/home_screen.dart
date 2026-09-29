@@ -2,11 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 
 import 'app_controller.dart';
 import 'content_link_dialog.dart';
 import 'content_links.dart';
+import 'deliberate_refresh_indicator.dart';
 import 'design_system.dart';
 import 'detail_screen.dart';
 import 'feed_widgets.dart';
@@ -31,7 +33,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with RestorationMixin {
   final Map<SourceId, ScrollController> _scrollControllers =
       <SourceId, ScrollController>{};
   final ScrollController _searchScrollController = ScrollController();
@@ -42,7 +44,9 @@ class _HomeScreenState extends State<HomeScreen> {
   final Map<SourceId, int> _historyVersions = <SourceId, int>{};
   late SourceId _historySource = widget.controller.source;
   Timer? _scrollSaveTimer;
-  int _destination = 0;
+  final RestorableInt _restorableDestination = RestorableInt(0);
+  int get _destination => _restorableDestination.value;
+  set _destination(int value) => _restorableDestination.value = value;
   int _lastSearchNavigationId = 0;
   int _searchNavigationVersion = 0;
   final IncomingLinkReceiver _incomingLinks = IncomingLinkReceiver();
@@ -50,6 +54,14 @@ class _HomeScreenState extends State<HomeScreen> {
   final List<String> _pendingLinks = [];
   bool _linkDialogOpen = false;
   bool _drainingLinks = false;
+
+  @override
+  String get restorationId => 'home';
+
+  @override
+  void restoreState(RestorationBucket? oldBucket, bool initialRestore) {
+    registerForRestoration(_restorableDestination, 'destination');
+  }
 
   @override
   void initState() {
@@ -244,8 +256,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _scheduleScrollSave(SourceId source, ScrollController scrollController) {
-    _scrollSaveTimer?.cancel();
+    if (_scrollSaveTimer?.isActive ?? false) return;
     _scrollSaveTimer = Timer(const Duration(milliseconds: 450), () {
+      _scrollSaveTimer = null;
       if (scrollController.hasClients) {
         unawaited(
           widget.controller.settings.setScrollOffset(
@@ -340,12 +353,12 @@ class _HomeScreenState extends State<HomeScreen> {
             curve: Curves.easeOut,
           );
         }
-        await widget.controller.refresh();
       }
       return;
     }
     final leavingSearch = _destination == 1 && value != 1;
     _searchNavigationVersion++;
+    unawaited(HapticFeedback.selectionClick());
     setState(() => _destination = value);
     if (leavingSearch) await widget.controller.restoreFeed();
   }
@@ -432,6 +445,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _searchNavigationChanged,
     );
     _scrollSaveTimer?.cancel();
+    _restorableDestination.dispose();
     _searchScrollController.dispose();
     _searchTextController.dispose();
     for (final entry in _scrollControllers.entries) {
@@ -1041,8 +1055,10 @@ class _FeedBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return RefreshIndicator(
-      onRefresh: controller.refresh,
+    return DeliberateRefreshIndicator(
+      controller: scrollController,
+      enabled: !controller.loading,
+      onRefresh: controller.manualRefresh,
       child: CustomScrollView(
         key: PageStorageKey<String>(
           storageKey ?? 'feed-${controller.source.id}-${controller.channel.id}',

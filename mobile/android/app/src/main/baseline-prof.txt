@@ -1,0 +1,8 @@
+# App-specific Android startup paths. Flutter's Dart code is AOT compiled in
+# release, while dependency profiles are merged with these rules at build time.
+Lcom/xjz/mixsocial/MainActivity;
+HSPLcom/xjz/mixsocial/MainActivity;-><init>()V
+HSPLcom/xjz/mixsocial/MainActivity;->configureFlutterEngine(Lio/flutter/embedding/engine/FlutterEngine;)V
+Lcom/xjz/mixsocial/MediaToolsHandler;
+Lio/flutter/plugins/GeneratedPluginRegistrant;
+HSPLio/flutter/plugins/GeneratedPluginRegistrant;->registerWith(Lio/flutter/embedding/engine/FlutterEngine;)V
