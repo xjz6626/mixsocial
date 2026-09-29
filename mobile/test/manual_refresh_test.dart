@@ -12,6 +12,7 @@ import 'package:shared_preferences_platform_interface/shared_preferences_async_p
 
 class _XhsSource implements XhsWebSource {
   Completer<FeedPage>? nextBrowse;
+  final cursors = <String>[];
 
   @override
   SourceId get id => SourceId.xhs;
@@ -20,8 +21,10 @@ class _XhsSource implements XhsWebSource {
   XhsSearchFilters get searchFilters => const XhsSearchFilters();
 
   @override
-  Future<FeedPage> browse(FeedChannel channel, {String cursor = ''}) =>
-      nextBrowse!.future;
+  Future<FeedPage> browse(FeedChannel channel, {String cursor = ''}) {
+    cursors.add(cursor);
+    return nextBrowse!.future;
+  }
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -118,7 +121,74 @@ void main() {
       await controller.manualRefresh();
 
       expect(controller.items, isEmpty);
-      expect(controller.error, contains('offline'));
+      expect(controller.error, contains('网络暂时不可用'));
     },
   );
+
+  test(
+    'a partial mixed refresh retains failed source items and cache',
+    () async {
+      final oldXhs = _item(SourceId.xhs, 'xhs-old');
+      final oldTieba = _item(SourceId.tieba, 'tieba-old');
+      controller.items = <FeedItem>[oldTieba, oldXhs];
+      await settings.saveFeedCache(
+        SourceId.all,
+        FeedChannel.recommend,
+        <FeedItem>[oldTieba, oldXhs],
+      );
+      xhs.nextBrowse = Completer<FeedPage>()
+        ..completeError(StateError('request to private URL failed: offline'));
+      tieba.nextBrowse = Completer<FeedPage>()
+        ..complete(
+          FeedPage(items: <FeedItem>[_item(SourceId.tieba, 'tieba-new')]),
+        );
+
+      await controller.refresh();
+
+      expect(controller.items.map((item) => item.key).toSet(), {
+        _item(SourceId.tieba, 'tieba-new').key,
+        oldXhs.key,
+      });
+      expect(controller.notices.join(), contains('网络暂时不可用'));
+      expect(controller.notices.join(), isNot(contains('private URL')));
+      expect(
+        (await settings.feedCache(
+          SourceId.all,
+          FeedChannel.recommend,
+        )).map((item) => item.key).toList(),
+        [oldTieba.key, oldXhs.key],
+      );
+    },
+  );
+
+  test('a failed mixed source keeps its previous pagination cursor', () async {
+    xhs.nextBrowse = Completer<FeedPage>()
+      ..complete(
+        FeedPage(
+          items: <FeedItem>[_item(SourceId.xhs, 'xhs-first')],
+          nextCursor: 'xhs-next',
+          hasMore: true,
+        ),
+      );
+    tieba.nextBrowse = Completer<FeedPage>()
+      ..complete(
+        FeedPage(items: <FeedItem>[_item(SourceId.tieba, 'tieba-first')]),
+      );
+    await controller.refresh();
+
+    xhs.nextBrowse = Completer<FeedPage>()
+      ..completeError(StateError('offline'));
+    tieba.nextBrowse = Completer<FeedPage>()
+      ..complete(
+        FeedPage(items: <FeedItem>[_item(SourceId.tieba, 'tieba-new')]),
+      );
+    await controller.refresh();
+    expect(controller.hasMore, isTrue);
+
+    xhs.nextBrowse = Completer<FeedPage>()
+      ..complete(FeedPage(items: <FeedItem>[_item(SourceId.xhs, 'xhs-next')]));
+    await controller.loadMore();
+    expect(xhs.cursors.last, 'xhs-next');
+    expect(controller.items.map((item) => item.ref.id), contains('xhs-next'));
+  });
 }

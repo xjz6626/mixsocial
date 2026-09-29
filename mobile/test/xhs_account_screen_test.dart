@@ -148,7 +148,7 @@ void main() {
 
       pending.completeError(StateError('请重新登录或完成验证'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('请重新登录或完成验证'), findsOneWidget);
+      expect(find.textContaining('登录状态无法确认'), findsOneWidget);
       expect(find.byType(ProfileScreen), findsNothing);
       expect(
         tester

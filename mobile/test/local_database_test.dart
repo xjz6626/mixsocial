@@ -37,6 +37,22 @@ class _FailingReadLaterPreferences extends SharedPreferencesAsync {
   }
 }
 
+class _FailingLibraryPreferences extends SharedPreferencesAsync {
+  _FailingLibraryPreferences({required this.recoveryFails});
+
+  final bool Function() recoveryFails;
+
+  @override
+  Future<void> setString(String key, String value) {
+    if (recoveryFails() &&
+        key.startsWith('library.') &&
+        key.endsWith('.recovery.v1')) {
+      return Future<void>.error(StateError('Recovery write is unavailable'));
+    }
+    return super.setString(key, value);
+  }
+}
+
 void main() {
   sqfliteFfiInit();
 
@@ -476,5 +492,91 @@ void main() {
       database: database,
     );
     expect((await restored.historyItems()).first.key, 'tieba:thread-2');
+  });
+
+  test(
+    'saved and history edits made during a SQLite outage are replayed',
+    () async {
+      SharedPreferencesAsyncPlatform.instance =
+          InMemorySharedPreferencesAsync.empty();
+      final preferences = SharedPreferencesAsync();
+      await preferences.setBool('storage.sqliteMigrated.v1', true);
+      await database.setSaved(_item(1), true);
+      await database.addHistory(_item(1));
+      await LocalSettings.create(preferences: preferences, database: database);
+
+      final fallback = LocalSettings(preferences);
+      expect((await fallback.savedItems()).single.key, _item(1).key);
+      await fallback.setSaved(_item(1), false);
+      await fallback.setSaved(_item(2), true);
+      await fallback.addHistory(_item(2));
+      await database.setSaved(_item(3), true);
+
+      final restored = await LocalSettings.create(
+        preferences: preferences,
+        database: database,
+      );
+      expect((await restored.savedItems()).map((item) => item.key).toSet(), {
+        _item(2).key,
+        _item(3).key,
+      });
+      expect((await restored.historyItems()).map((item) => item.key).toList(), [
+        _item(2).key,
+        _item(1).key,
+      ]);
+      final again = await LocalSettings.create(
+        preferences: preferences,
+        database: database,
+      );
+      expect((await again.savedItems()).length, 2);
+    },
+  );
+
+  test('clearing history during a SQLite outage is replayed', () async {
+    SharedPreferencesAsyncPlatform.instance =
+        InMemorySharedPreferencesAsync.empty();
+    final preferences = SharedPreferencesAsync();
+    await preferences.setBool('storage.sqliteMigrated.v1', true);
+    await database.addHistory(_item(1));
+    await LocalSettings.create(preferences: preferences, database: database);
+
+    final fallback = LocalSettings(preferences);
+    await fallback.clearHistory();
+    await fallback.addHistory(_item(2));
+    await database.addHistory(_item(3));
+
+    final restored = await LocalSettings.create(
+      preferences: preferences,
+      database: database,
+    );
+    expect((await restored.historyItems()).single.key, _item(2).key);
+  });
+
+  test('a failed fallback write cannot change visible saved items', () async {
+    SharedPreferencesAsyncPlatform.instance =
+        InMemorySharedPreferencesAsync.empty();
+    var failWrites = false;
+    final preferences = _FailingLibraryPreferences(
+      recoveryFails: () => failWrites,
+    );
+    await preferences.setBool('storage.sqliteMigrated.v1', true);
+    await database.setSaved(_item(1), true);
+    await LocalSettings.create(preferences: preferences, database: database);
+
+    final fallback = LocalSettings(preferences);
+    failWrites = true;
+    await expectLater(fallback.setSaved(_item(2), true), throwsStateError);
+    expect((await fallback.savedItems()).single.key, _item(1).key);
+
+    failWrites = false;
+    await fallback.setSaved(_item(2), true);
+    final restored = await LocalSettings.create(
+      preferences: preferences,
+      database: database,
+    );
+    expect((await restored.savedItems()).map((item) => item.key).toSet(), {
+      _item(1).key,
+      _item(2).key,
+    });
   });
 }

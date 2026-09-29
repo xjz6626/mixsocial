@@ -57,6 +57,12 @@ class SourceFailure {
   }
 }
 
+/// A fixed user-facing message; raw platform errors stay out of the UI.
+String safeSourceMessage(Object error) => SourceFailure.from(error).message;
+
+String safeLocalMessage(Object error) =>
+    error is FormatException ? error.message : '本地数据操作失败，请重试';
+
 class DiagnosticEvent {
   const DiagnosticEvent({
     required this.source,

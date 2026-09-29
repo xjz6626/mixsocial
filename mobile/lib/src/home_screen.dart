@@ -390,7 +390,10 @@ class _HomeScreenState extends State<HomeScreen> with RestorationMixin {
   }
 
   void _openProfile(Author author) {
-    if (author.ref.source != SourceId.xhs || author.ref.id.isEmpty) return;
+    if (!widget.controller.supportsProfile(author.ref.source) ||
+        author.ref.id.isEmpty) {
+      return;
+    }
     Navigator.push<void>(
       context,
       MaterialPageRoute<void>(
@@ -1125,7 +1128,15 @@ class _FeedBody extends StatelessWidget {
                           onTap: () => onOpen(controller.items[index]),
                           density: controller.density,
                           onAuthorTap:
-                              controller.items[index].ref.source == SourceId.xhs
+                              controller.supportsProfile(
+                                    controller.items[index].ref.source,
+                                  ) &&
+                                  controller
+                                      .items[index]
+                                      .author
+                                      .ref
+                                      .id
+                                      .isNotEmpty
                               ? () =>
                                     onAuthorTap(controller.items[index].author)
                               : null,
@@ -1153,7 +1164,15 @@ class _FeedBody extends StatelessWidget {
                           onTap: () => onOpen(controller.items[index]),
                           density: controller.density,
                           onAuthorTap:
-                              controller.items[index].ref.source == SourceId.xhs
+                              controller.supportsProfile(
+                                    controller.items[index].ref.source,
+                                  ) &&
+                                  controller
+                                      .items[index]
+                                      .author
+                                      .ref
+                                      .id
+                                      .isNotEmpty
                               ? () =>
                                     onAuthorTap(controller.items[index].author)
                               : null,

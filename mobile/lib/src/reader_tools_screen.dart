@@ -10,6 +10,7 @@ import 'library_filter.dart';
 import 'library_manager_screen.dart';
 import 'models.dart';
 import 'reading_state_store.dart';
+import 'source_diagnostics.dart';
 
 enum LocalLibraryKind {
   history('浏览历史', Icons.history_toggle_off_rounded),
@@ -138,7 +139,7 @@ class _LocalLibraryScreenState extends State<LocalLibraryScreen> {
         });
       }
     } catch (error) {
-      if (mounted) _message('清空历史失败：$error');
+      if (mounted) _message('清空历史失败：${safeLocalMessage(error)}');
     } finally {
       if (mounted) setState(() => _working = false);
     }
@@ -177,7 +178,7 @@ class _LocalLibraryScreenState extends State<LocalLibraryScreen> {
               ),
       );
     } catch (error) {
-      if (mounted) _message('本地内容更新失败：$error');
+      if (mounted) _message('本地内容更新失败：${safeLocalMessage(error)}');
     } finally {
       if (mounted) setState(() => _working = false);
       _editFinished = null;
@@ -195,9 +196,12 @@ class _LocalLibraryScreenState extends State<LocalLibraryScreen> {
     if (_working) return;
     setState(() => _working = true);
     try {
-      await ReadingStateStore().setCompleted(item.key, _reading[item.key]?.completed != true);
+      await ReadingStateStore().setCompleted(
+        item.key,
+        _reading[item.key]?.completed != true,
+      );
     } catch (error) {
-      if (mounted) _message('阅读状态保存失败：$error');
+      if (mounted) _message('阅读状态保存失败：${safeLocalMessage(error)}');
     } finally {
       if (mounted) setState(() => _working = false);
     }
@@ -334,7 +338,7 @@ class _LocalLibraryScreenState extends State<LocalLibraryScreen> {
             icon: Icons.storage_outlined,
             iconColor: Theme.of(context).colorScheme.error,
             title: '本地内容读取失败',
-            message: _error.toString(),
+            message: safeLocalMessage(_error!),
             actionLabel: '重试',
             onAction: _load,
           ),
@@ -420,22 +424,34 @@ class _LocalLibraryScreenState extends State<LocalLibraryScreen> {
                       ),
                       trailing: _history
                           ? const Icon(Icons.chevron_right)
-                          : Row(mainAxisSize: MainAxisSize.min, children: [
-                            if (widget.kind == LocalLibraryKind.readLater)
-                              IconButton(
-                                tooltip: _reading[item.key]?.completed == true ? '标为未读' : '标为已读',
-                                onPressed: _working ? null : () => _markCompleted(item),
-                                icon: Icon(_reading[item.key]?.completed == true ? Icons.task_alt : Icons.radio_button_unchecked),
-                              ),
-                            IconButton(
-                              key: Key('library-remove-${item.key}'),
-                              tooltip: '移出${widget.kind.label}',
-                              onPressed: _working
-                                  ? null
-                                  : () => _setPresent(item, false),
-                              icon: const Icon(Icons.remove_circle_outline),
+                          : Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (widget.kind == LocalLibraryKind.readLater)
+                                  IconButton(
+                                    tooltip:
+                                        _reading[item.key]?.completed == true
+                                        ? '标为未读'
+                                        : '标为已读',
+                                    onPressed: _working
+                                        ? null
+                                        : () => _markCompleted(item),
+                                    icon: Icon(
+                                      _reading[item.key]?.completed == true
+                                          ? Icons.task_alt
+                                          : Icons.radio_button_unchecked,
+                                    ),
+                                  ),
+                                IconButton(
+                                  key: Key('library-remove-${item.key}'),
+                                  tooltip: '移出${widget.kind.label}',
+                                  onPressed: _working
+                                      ? null
+                                      : () => _setPresent(item, false),
+                                  icon: const Icon(Icons.remove_circle_outline),
+                                ),
+                              ],
                             ),
-                          ]),
                     ),
                   ),
                 ),

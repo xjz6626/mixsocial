@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'app_controller.dart';
 import 'design_system.dart';
 import 'home_screen.dart';
+import 'source_diagnostics.dart';
 
 class MixsocialApp extends StatefulWidget {
   const MixsocialApp({super.key, this.controller});
@@ -53,7 +54,9 @@ class _MixsocialAppState extends State<MixsocialApp> {
         if (snapshot.hasError) {
           return _materialApp(
             home: _StartupFailure(
-              message: snapshot.error.toString(),
+              message: snapshot.error is FormatException
+                  ? safeLocalMessage(snapshot.error!)
+                  : safeSourceMessage(snapshot.error!),
               onRetry: _retry,
             ),
           );

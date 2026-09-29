@@ -135,10 +135,12 @@ class TiebaSource
   }) async {
     await _startup;
     if (profile.source != SourceId.tieba ||
-        !RegExp(r'^[1-9][0-9]*$').hasMatch(profile.id))
+        !RegExp(r'^[1-9][0-9]*$').hasMatch(profile.id)) {
       throw ArgumentError('无效的贴吧用户编号');
-    if (section != ProfileSection.notes)
+    }
+    if (section != ProfileSection.notes) {
       throw StateError('贴吧主页暂时仅提供公开帖子动态；平台收藏和点赞请到官方网页查看');
+    }
     try {
       return ProfilePage.decode(
         await MixsocialCore.profileTieba(

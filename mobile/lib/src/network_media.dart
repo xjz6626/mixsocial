@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:mixsocial_core/mixsocial_core.dart';
 
 import 'models.dart';
+import 'source_diagnostics.dart';
 
 enum MediaImageQuality { thumbnail, detail, original }
 
@@ -280,9 +281,7 @@ class _SourceNetworkImageState extends State<SourceNetworkImage> {
       final nativeError = _lastError;
       return _error(
         context,
-        nativeError == null
-            ? error
-            : StateError('原生加载失败：$nativeError；Flutter 加载失败：$error'),
+        StateError(safeSourceMessage(nativeError ?? error)),
         stackTrace,
       );
     },
@@ -311,7 +310,7 @@ class _SourceNetworkImageState extends State<SourceNetworkImage> {
               right: 5,
               bottom: 5,
               child: Tooltip(
-                message: error.toString(),
+                message: safeSourceMessage(error),
                 child: const DecoratedBox(
                   decoration: BoxDecoration(
                     color: Colors.black54,

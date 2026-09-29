@@ -103,15 +103,18 @@ class _AccountScreenState extends State<AccountScreen> {
     setState(() => _checking = true);
     try {
       final status = await widget.controller.tieba.checkLogin();
-      if (mounted && generation == _statusGeneration)
+      if (mounted && generation == _statusGeneration) {
         setState(() => _tiebaStatus = status);
+      }
     } catch (error) {
       sourceDiagnostics.record(SourceId.tieba, '登录验证', error);
-      if (mounted && generation == _statusGeneration)
+      if (mounted && generation == _statusGeneration) {
         setState(() => _tiebaStatus = TiebaSessionStatus.fromFailure(error));
+      }
     } finally {
-      if (mounted && generation == _statusGeneration)
+      if (mounted && generation == _statusGeneration) {
         setState(() => _checking = false);
+      }
     }
   }
 
@@ -200,7 +203,7 @@ class _AccountScreenState extends State<AccountScreen> {
         ),
       );
     } catch (error) {
-      if (mounted) _showMessage(error.toString(), error: true);
+      if (mounted) _showMessage(safeSourceMessage(error), error: true);
     } finally {
       if (mounted) setState(() => _openingXhsProfile = false);
     }
@@ -225,11 +228,12 @@ class _AccountScreenState extends State<AccountScreen> {
     } catch (error) {
       if (mounted) _showMessage(SourceFailure.from(error).message, error: true);
     } finally {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _openingTiebaProfile = false;
           _tiebaStatus = widget.controller.tieba.sessionStatus;
         });
+      }
     }
   }
 
@@ -299,11 +303,12 @@ class _AccountScreenState extends State<AccountScreen> {
     if (credential == null || !mounted) return;
     await _withProgress(() async {
       await widget.controller.tieba.loginWithCredential(credential);
-      if (mounted)
+      if (mounted) {
         setState(() {
           _tiebaCredentialSaved = true;
           _tiebaStatus = widget.controller.tieba.sessionStatus;
         });
+      }
       await _refreshFeed();
       if (mounted) _showMessage('贴吧登录成功，BDUSS 已保存到系统安全存储');
     });
@@ -406,11 +411,12 @@ class _AccountScreenState extends State<AccountScreen> {
     if (confirmed != true || !mounted) return;
     await _withProgress(() async {
       await widget.controller.tieba.logout();
-      if (mounted)
+      if (mounted) {
         setState(() {
           _tiebaCredentialSaved = false;
           _tiebaStatus = const TiebaSessionStatus(TiebaSessionState.signedOut);
         });
+      }
       await _refreshFeed();
     });
   }
@@ -461,7 +467,7 @@ class _AccountScreenState extends State<AccountScreen> {
     try {
       await action();
     } catch (error) {
-      if (mounted) _showMessage(error.toString(), error: true);
+      if (mounted) _showMessage(safeSourceMessage(error), error: true);
     } finally {
       if (mounted) setState(() => _checking = false);
     }
@@ -490,7 +496,9 @@ class _AccountScreenState extends State<AccountScreen> {
           : _xhsStatusError == null
           ? '未检测到登录状态'
           : '暂时无法检查登录状态',
-      detail: _xhsStatusError?.toString(),
+      detail: _xhsStatusError == null
+          ? null
+          : safeSourceMessage(_xhsStatusError!),
       action: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
@@ -950,7 +958,7 @@ class _TiebaLoginScreenState extends State<TiebaLoginScreen> {
         _showMessage('尚未检测到 BDUSS，请在网页内完成登录后重试');
       }
     } catch (error) {
-      if (mounted) _showMessage(error.toString());
+      if (mounted) _showMessage(safeSourceMessage(error));
     } finally {
       if (mounted) setState(() => _checking = false);
     }
@@ -1006,7 +1014,7 @@ class _TiebaLoginScreenState extends State<TiebaLoginScreen> {
                         icon: Icons.cloud_off_outlined,
                         iconColor: Theme.of(context).colorScheme.error,
                         title: '百度登录页加载失败',
-                        message: _error.toString(),
+                        message: safeSourceMessage(_error!),
                         actionLabel: '重新加载',
                         onAction: _reload,
                       ),
@@ -1193,7 +1201,7 @@ class _ZhihuLoginScreenState extends State<ZhihuLoginScreen> {
                         icon: Icons.cloud_off_outlined,
                         iconColor: Theme.of(context).colorScheme.error,
                         title: '知乎登录页加载失败',
-                        message: _error.toString(),
+                        message: safeSourceMessage(_error!),
                         actionLabel: '重新加载',
                         onAction: _reload,
                       ),
@@ -1412,7 +1420,7 @@ class _XhsLoginScreenState extends State<XhsLoginScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(error.toString())));
+      ).showSnackBar(SnackBar(content: Text(safeSourceMessage(error))));
     } finally {
       if (mounted) setState(() => _checking = false);
     }
@@ -1459,7 +1467,7 @@ class _XhsLoginScreenState extends State<XhsLoginScreen> {
                         icon: Icons.cloud_off_outlined,
                         iconColor: Theme.of(context).colorScheme.error,
                         title: '小红书登录页加载失败',
-                        message: _error.toString(),
+                        message: safeSourceMessage(_error!),
                         actionLabel: '重新加载',
                         onAction: _open,
                       ),

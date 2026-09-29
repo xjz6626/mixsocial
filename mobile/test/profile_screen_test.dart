@@ -211,7 +211,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(controller.followCalls, 1);
       expect(find.widgetWithText(FilledButton, '关注'), findsOneWidget);
-      expect(find.textContaining('rejected'), findsOneWidget);
+      expect(find.textContaining('平台数据暂时不可用'), findsOneWidget);
     },
   );
 }

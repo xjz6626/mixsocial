@@ -322,7 +322,7 @@ void main() {
       await tester.ensureVisible(_button('root'));
       await tester.tap(_button('root'));
       await tester.pumpAndSettle();
-      expect(find.text('Bad state: 请先登录'), findsOneWidget);
+      expect(find.textContaining('登录状态无法确认'), findsOneWidget);
       expect(
         find.descendant(of: _button('root'), matching: find.text('4')),
         findsOneWidget,
@@ -420,7 +420,7 @@ void main() {
         pending.completeError(StateError('服务器拒绝点赞'));
         await tester.pumpAndSettle();
         expect(tester.widget<TextButton>(_button('root')).onPressed, isNotNull);
-        expect(find.text('Bad state: 服务器拒绝点赞'), findsOneWidget);
+        expect(find.textContaining('平台数据暂时不可用'), findsOneWidget);
         expect(
           find.descendant(of: _button('root'), matching: find.text('4')),
           findsOneWidget,

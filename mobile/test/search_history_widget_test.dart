@@ -6,6 +6,7 @@ import 'package:mixsocial_mobile/src/app_controller.dart';
 import 'package:mixsocial_mobile/src/home_screen.dart';
 import 'package:mixsocial_mobile/src/local_settings.dart';
 import 'package:mixsocial_mobile/src/models.dart';
+import 'package:mixsocial_mobile/src/profile_screen.dart';
 import 'package:mixsocial_mobile/src/search_history.dart';
 import 'package:mixsocial_mobile/src/tieba_source.dart';
 import 'package:mixsocial_mobile/src/xhs_web_source.dart';
@@ -41,6 +42,9 @@ class _TiebaSource implements TiebaSource {
   final queries = <String>[];
 
   @override
+  Set<SourceCapability> get capabilities => const <SourceCapability>{};
+
+  @override
   SourceId get id => SourceId.tieba;
 
   @override
@@ -51,6 +55,13 @@ class _TiebaSource implements TiebaSource {
     queries.add(query);
     return const FeedPage();
   }
+
+  @override
+  Future<ProfilePage> profile(
+    ProfileRef profile, {
+    ProfileSection section = ProfileSection.notes,
+    String cursor = '',
+  }) async => ProfilePage(ref: profile, name: '贴吧作者');
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -83,6 +94,34 @@ void main() {
   });
 
   tearDown(() => controller.dispose());
+
+  testWidgets('Tieba feed author opens the supported profile page', (
+    tester,
+  ) async {
+    controller
+      ..source = SourceId.tieba
+      ..layout = FeedLayout.list
+      ..items = <FeedItem>[
+        FeedItem(
+          ref: const ContentRef(source: SourceId.tieba, id: '123'),
+          title: '贴吧主题',
+          author: const Author(
+            ref: ProfileRef(source: SourceId.tieba, id: '42'),
+            id: '42',
+            name: '贴吧作者',
+          ),
+          stats: const ItemStats(),
+        ),
+      ];
+    await tester.pumpWidget(
+      MaterialApp(home: HomeScreen(controller: controller)),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('贴吧作者'));
+    await tester.pumpAndSettle();
+    expect(find.byType(ProfileScreen), findsOneWidget);
+  });
 
   Future<void> openSearch(
     WidgetTester tester, {
@@ -159,7 +198,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(xhs.queries, <String>['暂时离线']);
     expect(await history.read(SourceId.xhs), <String>['暂时离线']);
-    expect(controller.error, contains('offline'));
+    expect(controller.error, contains('网络暂时不可用'));
   });
 
   testWidgets('slow or failed history writes never delay online search', (

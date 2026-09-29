@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'comment_drafts.dart';
+import 'source_diagnostics.dart';
 
 Future<bool> showCommentComposer(
   BuildContext context, {
@@ -76,7 +77,7 @@ class _CommentComposerState extends State<_CommentComposer> {
       _text.text = value?.body ?? '';
       _unconfirmed = value?.unconfirmed ?? false;
     } catch (error) {
-      if (mounted) _error = '读取草稿失败：$error';
+      if (mounted) _error = '读取草稿失败：${safeLocalMessage(error)}';
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -92,7 +93,7 @@ class _CommentComposerState extends State<_CommentComposer> {
       return true;
     } catch (error) {
       if (mounted && generation == _saveGeneration) {
-        setState(() => _error = '草稿未能保存，请复制正文备份：$error');
+        setState(() => _error = '草稿未能保存，请复制正文备份：${safeLocalMessage(error)}');
       }
       return false;
     }
@@ -129,7 +130,11 @@ class _CommentComposerState extends State<_CommentComposer> {
       }
       if (mounted) Navigator.pop(context, true);
     } catch (error) {
-      if (mounted) setState(() => _error = '$error\n正文已保留，请先核对帖子是否已收到这条发言。');
+      if (mounted) {
+        setState(
+          () => _error = '${safeSourceMessage(error)}\n正文已保留，请先核对帖子是否已收到这条发言。',
+        );
+      }
     } finally {
       if (mounted) setState(() => _sending = false);
     }
@@ -151,7 +156,7 @@ class _CommentComposerState extends State<_CommentComposer> {
         _error = null;
       });
     } catch (error) {
-      if (mounted) setState(() => _error = '清空草稿失败：$error');
+      if (mounted) setState(() => _error = '清空草稿失败：${safeLocalMessage(error)}');
     }
   }
 

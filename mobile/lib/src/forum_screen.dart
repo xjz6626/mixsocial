@@ -8,6 +8,7 @@ import 'detail_screen.dart';
 import 'feed_widgets.dart';
 import 'forum_preferences.dart';
 import 'models.dart';
+import 'source_diagnostics.dart';
 
 class ForumHubScreen extends StatefulWidget {
   const ForumHubScreen({super.key, required this.controller, this.preferences});
@@ -76,24 +77,26 @@ class _ForumHubScreenState extends State<ForumHubScreen> {
       final pins = await _preferences.pinnedForums();
       if (mounted) setState(() => _pinned = pins);
     } catch (error) {
-      _message('更新本地置顶失败：$error');
+      _message('更新本地置顶失败：${safeLocalMessage(error)}');
     }
   }
 
   void _message(String message) {
-    if (mounted)
+    if (mounted) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(message)));
+    }
   }
 
   Future<void> _removeRecent(String forum) async {
     try {
       await widget.controller.settings.removeRecentForum(forum);
-      if (mounted)
+      if (mounted) {
         setState(() => _recent = _recent.where((v) => v != forum).toList());
+      }
     } catch (error) {
-      _message('移除最近访问失败：$error');
+      _message('移除最近访问失败：${safeLocalMessage(error)}');
     }
   }
 
@@ -202,7 +205,7 @@ class _ForumHubScreenState extends State<ForumHubScreen> {
                         child: Padding(
                           padding: const EdgeInsets.all(14),
                           child: Text(
-                            '登录贴吧后可读取关注吧列表。\n$_error',
+                            '登录贴吧后可读取关注吧列表。\n${safeSourceMessage(_error!)}',
                             style: Theme.of(context).textTheme.bodyMedium,
                           ),
                         ),
@@ -293,8 +296,9 @@ class _ForumScreenState extends State<ForumScreen> {
     _scrollController.addListener(() {
       if (_paginationError == null &&
           _error == null &&
-          _scrollController.position.extentAfter < 520)
+          _scrollController.position.extentAfter < 520) {
         unawaited(_loadMore());
+      }
     });
     unawaited(_initialize());
   }
@@ -317,16 +321,17 @@ class _ForumScreenState extends State<ForumScreen> {
         _pinned = pins.contains(widget.forum);
       });
     } catch (error) {
-      _message('读取本地贴吧设置失败：$error');
+      _message('读取本地贴吧设置失败：${safeLocalMessage(error)}');
     }
     if (mounted) await _load();
   }
 
   void _message(String message) {
-    if (mounted)
+    if (mounted) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(message)));
+    }
   }
 
   Future<void> _pin() async {
@@ -335,7 +340,7 @@ class _ForumScreenState extends State<ForumScreen> {
       await _preferences.setPinned(widget.forum, value);
       if (mounted) setState(() => _pinned = value);
     } catch (error) {
-      _message('更新本地置顶失败：$error');
+      _message('更新本地置顶失败：${safeLocalMessage(error)}');
     }
   }
 
@@ -346,7 +351,7 @@ class _ForumScreenState extends State<ForumScreen> {
     try {
       await _preferences.setSort(widget.forum, value);
     } catch (error) {
-      _message('排序已切换，但偏好保存失败：$error');
+      _message('排序已切换，但偏好保存失败：${safeLocalMessage(error)}');
     }
     await loading;
   }
@@ -378,11 +383,13 @@ class _ForumScreenState extends State<ForumScreen> {
         _hasMore = page.hasMore && page.nextCursor.isNotEmpty;
       });
     } catch (failure) {
-      if (mounted && generation == _generation)
+      if (mounted && generation == _generation) {
         setState(() => _error = failure);
+      }
     } finally {
-      if (mounted && generation == _generation)
+      if (mounted && generation == _generation) {
         setState(() => _loading = false);
+      }
     }
   }
 
@@ -391,8 +398,9 @@ class _ForumScreenState extends State<ForumScreen> {
         _loading ||
         _loadingMore ||
         !_hasMore ||
-        _nextCursor.isEmpty)
+        _nextCursor.isEmpty) {
       return;
+    }
     final generation = _generation;
     final cursor = _nextCursor;
     final query = _query;
@@ -424,11 +432,13 @@ class _ForumScreenState extends State<ForumScreen> {
             page.nextCursor != cursor;
       });
     } catch (failure) {
-      if (mounted && generation == _generation)
+      if (mounted && generation == _generation) {
         setState(() => _paginationError = failure);
+      }
     } finally {
-      if (mounted && generation == _generation)
+      if (mounted && generation == _generation) {
         setState(() => _loadingMore = false);
+      }
     }
   }
 
@@ -558,7 +568,7 @@ class _ForumScreenState extends State<ForumScreen> {
                             icon: Icons.cloud_off_outlined,
                             iconColor: Theme.of(context).colorScheme.error,
                             title: '贴吧内容加载失败',
-                            message: _error.toString(),
+                            message: safeSourceMessage(_error!),
                             actionLabel: '重新加载',
                             onAction: _load,
                           ),
@@ -616,7 +626,7 @@ class _ForumScreenState extends State<ForumScreen> {
                                     leading: const Icon(Icons.error_outline),
                                     title: const Text('加载更多失败'),
                                     subtitle: Text(
-                                      _paginationError.toString(),
+                                      safeSourceMessage(_paginationError!),
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
                                     ),
@@ -630,11 +640,12 @@ class _ForumScreenState extends State<ForumScreen> {
                               ),
                             );
                           }
-                          if (_hasMore)
+                          if (_hasMore) {
                             return TextButton(
                               onPressed: _loadMore,
                               child: const Text('加载更多主题'),
                             );
+                          }
                           return Padding(
                             padding: const EdgeInsets.all(18),
                             child: const Center(child: Text('已经到底了')),

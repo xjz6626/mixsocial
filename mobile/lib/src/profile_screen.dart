@@ -9,6 +9,7 @@ import 'feed_widgets.dart';
 import 'models.dart';
 import 'network_media.dart';
 import 'official_page_screen.dart';
+import 'source_diagnostics.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({
@@ -189,7 +190,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         _message(warning ?? (value ? '已关注' : '已取消关注'));
       }
     } catch (error) {
-      if (mounted) _message(error.toString(), error: true);
+      if (mounted) _message(safeSourceMessage(error), error: true);
     } finally {
       if (mounted) setState(() => _working = false);
     }
@@ -210,14 +211,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void _openOfficialProfile() {
     final ref = _profile?.ref ?? widget.author.ref;
     final uri = Uri.tryParse(ref.url);
-    if (ref.source != SourceId.tieba || uri == null || uri.host != 'tieba.baidu.com' || uri.path != '/home/main' || uri.userInfo.isNotEmpty) {
+    if (ref.source != SourceId.tieba ||
+        uri == null ||
+        uri.host != 'tieba.baidu.com' ||
+        uri.path != '/home/main' ||
+        uri.userInfo.isNotEmpty) {
       _message('当前资料没有可确认的官方主页链接，请稍后重试', error: true);
       return;
     }
-    Navigator.push<void>(context, MaterialPageRoute<void>(builder: (_) => OfficialPageScreen(
-      source: SourceId.tieba, title: '贴吧官方个人主页',
-      load: () => widget.controller.tieba.interactionController(ContentRef(source: SourceId.tieba, id: ref.id, url: ref.url)),
-    )));
+    Navigator.push<void>(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => OfficialPageScreen(
+          source: SourceId.tieba,
+          title: '贴吧官方个人主页',
+          load: () => widget.controller.tieba.interactionController(
+            ContentRef(source: SourceId.tieba, id: ref.id, url: ref.url),
+          ),
+        ),
+      ),
+    );
   }
 
   void _message(String value, {bool error = false}) {
@@ -233,9 +246,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     final profile = _profile;
     return Scaffold(
-      appBar: AppBar(title: Text(profile?.name ?? widget.author.name), actions: <Widget>[
-        if (widget.author.ref.source == SourceId.tieba) IconButton(tooltip: '打开官方主页', onPressed: _openOfficialProfile, icon: const Icon(Icons.language)),
-      ]),
+      appBar: AppBar(
+        title: Text(profile?.name ?? widget.author.name),
+        actions: <Widget>[
+          if (widget.author.ref.source == SourceId.tieba)
+            IconButton(
+              tooltip: '打开官方主页',
+              onPressed: _openOfficialProfile,
+              icon: const Icon(Icons.language),
+            ),
+        ],
+      ),
       body: RefreshIndicator(
         onRefresh: _load,
         child: CustomScrollView(
@@ -276,22 +297,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
                     child: widget.author.ref.source == SourceId.tieba
-                      ? const Text('公开帖子动态（主题与回复所在帖子）')
-                      : SegmentedButton<ProfileSection>(
-                      segments: ProfileSection.values
-                          .map(
-                            (ProfileSection value) =>
-                                ButtonSegment<ProfileSection>(
-                                  value: value,
-                                  label: Text(value.label),
-                                ),
-                          )
-                          .toList(),
-                      selected: <ProfileSection>{_section},
-                      showSelectedIcon: false,
-                      onSelectionChanged: (Set<ProfileSection> values) =>
-                          unawaited(_selectSection(values.single)),
-                    ),
+                        ? const Text('公开帖子动态（主题与回复所在帖子）')
+                        : SegmentedButton<ProfileSection>(
+                            segments: ProfileSection.values
+                                .map(
+                                  (ProfileSection value) =>
+                                      ButtonSegment<ProfileSection>(
+                                        value: value,
+                                        label: Text(value.label),
+                                      ),
+                                )
+                                .toList(),
+                            selected: <ProfileSection>{_section},
+                            showSelectedIcon: false,
+                            onSelectionChanged: (Set<ProfileSection> values) =>
+                                unawaited(_selectSection(values.single)),
+                          ),
                   ),
                 ),
               ),
@@ -302,7 +323,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   icon: Icons.person_off_outlined,
                   iconColor: Theme.of(context).colorScheme.error,
                   title: '主页加载失败',
-                  message: _error.toString(),
+                  message: safeSourceMessage(_error!),
                   actionLabel: '重新加载',
                   onAction: _load,
                   compact: true,
@@ -352,7 +373,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 child: AppStateView(
                   icon: Icons.cloud_off_outlined,
                   title: '加载更多失败',
-                  message: _paginationError.toString(),
+                  message: safeSourceMessage(_paginationError!),
                   actionLabel: '重试加载更多',
                   onAction: _loadMore,
                   compact: true,

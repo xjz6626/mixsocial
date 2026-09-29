@@ -25,10 +25,11 @@ class DiagnosticsScreen extends StatelessWidget {
                         await Clipboard.setData(
                           ClipboardData(text: sourceDiagnostics.exportText()),
                         );
-                        if (context.mounted)
+                        if (context.mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(content: Text('已复制脱敏诊断')),
                           );
+                        }
                       },
                 icon: const Icon(Icons.copy),
                 label: const Text('复制脱敏诊断'),

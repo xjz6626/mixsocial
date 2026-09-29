@@ -5,6 +5,7 @@ import 'design_system.dart';
 import 'local_settings.dart';
 import 'models.dart';
 import 'source.dart';
+import 'source_diagnostics.dart';
 import 'tieba_source.dart';
 import 'xhs_web_source.dart';
 import 'zhihu_source.dart';
@@ -131,6 +132,7 @@ class MixsocialController extends ChangeNotifier {
     final query = searchQuery;
     final previousCursors = Map<SourceId, String>.of(_nextCursors);
     final previousMoreSources = Set<SourceId>.of(_moreSources);
+    final previousItems = items;
     loading = true;
     loadingMore = false;
     error = null;
@@ -149,8 +151,19 @@ class MixsocialController extends ChangeNotifier {
         query: query,
       );
       if (requestVersion != _requestVersion) return;
+      final pagesBySource = <SourceId, List<FeedItem>>{
+        for (final result in batch.pages) result.source: result.page.items,
+        if (!clearItems)
+          for (final failedSource in batch.failedSources)
+            failedSource: previousItems
+                .where((item) => item.ref.source == failedSource)
+                .toList(),
+      };
       final merged = _roundRobin(
-        batch.pages.map((_SourcePage result) => result.page.items).toList(),
+        <SourceId>[SourceId.tieba, SourceId.xhs, SourceId.zhihu]
+            .where(pagesBySource.containsKey)
+            .map((id) => pagesBySource[id]!)
+            .toList(),
       );
       items = prepareItems(merged);
       notices = <String>[
@@ -158,7 +171,16 @@ class MixsocialController extends ChangeNotifier {
         ...batch.failures,
       ];
       _recordPagination(batch.pages);
-      if (query.isEmpty) {
+      if (!clearItems) {
+        for (final failedSource in batch.failedSources) {
+          if (previousMoreSources.contains(failedSource)) {
+            _moreSources.add(failedSource);
+            final cursor = previousCursors[failedSource];
+            if (cursor != null) _nextCursors[failedSource] = cursor;
+          }
+        }
+      }
+      if (query.isEmpty && batch.failures.isEmpty) {
         try {
           await settings.saveFeedCache(selectedSource, selectedChannel, merged);
         } catch (_) {
@@ -171,7 +193,9 @@ class MixsocialController extends ChangeNotifier {
       }
     } catch (failure) {
       if (requestVersion != _requestVersion) return;
-      error = failure.toString();
+      error = failure is _PageLoadFailure
+          ? failure.message
+          : SourceFailure.from(failure).message;
       if (items.isNotEmpty) {
         _nextCursors = previousCursors;
         _moreSources = previousMoreSources;
@@ -247,7 +271,9 @@ class MixsocialController extends ChangeNotifier {
       }
     } catch (failure) {
       if (requestVersion != _requestVersion) return;
-      paginationError = failure.toString();
+      paginationError = failure is _PageLoadFailure
+          ? failure.message
+          : SourceFailure.from(failure).message;
     } finally {
       if (requestVersion == _requestVersion) {
         loadingMore = false;
@@ -276,7 +302,9 @@ class MixsocialController extends ChangeNotifier {
             }
             .where((FeedSource item) => onlySources?.contains(item.id) ?? true)
             .toList();
-    if (sources.isEmpty) return const _PageBatch(<_SourcePage>[], <String>[]);
+    if (sources.isEmpty) {
+      return const _PageBatch(<_SourcePage>[], <String>[], <SourceId>{});
+    }
 
     final results = await Future.wait<_PageResult>(
       sources.map((FeedSource item) async {
@@ -287,7 +315,12 @@ class MixsocialController extends ChangeNotifier {
               : await item.search(query, cursor: cursor);
           return _PageResult(_SourcePage(item.id, page), null);
         } catch (error) {
-          return _PageResult(null, '${item.id.label}：$error');
+          sourceDiagnostics.record(item.id, '读取内容', error);
+          return _PageResult(
+            null,
+            '${item.id.label}：${SourceFailure.from(error).message}',
+            item.id,
+          );
         }
       }),
     );
@@ -299,8 +332,15 @@ class MixsocialController extends ChangeNotifier {
         .where((result) => result.error != null)
         .map((result) => result.error!)
         .toList();
-    if (pages.isEmpty) throw StateError(failures.join('\n'));
-    return _PageBatch(pages, failures);
+    if (pages.isEmpty) throw _PageLoadFailure(failures.join('\n'));
+    return _PageBatch(
+      pages,
+      failures,
+      results
+          .where((result) => result.failedSource != null)
+          .map((result) => result.failedSource!)
+          .toSet(),
+    );
   }
 
   Future<void> selectSource(
@@ -460,7 +500,7 @@ class MixsocialController extends ChangeNotifier {
     try {
       await settings.setFollowing(profile, value);
     } catch (failure) {
-      return '${profile.source.label}${value ? '已关注' : '已取消关注'}，但本地记录保存失败：$failure';
+      return '${profile.source.label}${value ? '已关注' : '已取消关注'}，但本地记录保存失败：${safeLocalMessage(failure)}';
     }
     return null;
   }
@@ -579,8 +619,8 @@ class MixsocialController extends ChangeNotifier {
     } catch (failure) {
       if (!usesPlatform) rethrow;
       warning = value
-          ? '小红书已收藏，但本地副本保存失败：$failure'
-          : '小红书已取消收藏，但本地副本移除失败：$failure';
+          ? '小红书已收藏，但本地副本保存失败：${safeLocalMessage(failure)}'
+          : '小红书已取消收藏，但本地副本移除失败：${safeLocalMessage(failure)}';
     }
     _updateItem(
       item.ref,
@@ -789,9 +829,10 @@ class MixsocialController extends ChangeNotifier {
 }
 
 class _PageResult {
-  const _PageResult(this.page, this.error);
+  const _PageResult(this.page, this.error, [this.failedSource]);
   final _SourcePage? page;
   final String? error;
+  final SourceId? failedSource;
 }
 
 class _SourcePage {
@@ -801,7 +842,13 @@ class _SourcePage {
 }
 
 class _PageBatch {
-  const _PageBatch(this.pages, this.failures);
+  const _PageBatch(this.pages, this.failures, this.failedSources);
   final List<_SourcePage> pages;
   final List<String> failures;
+  final Set<SourceId> failedSources;
+}
+
+class _PageLoadFailure {
+  const _PageLoadFailure(this.message);
+  final String message;
 }

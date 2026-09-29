@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'content_filters.dart';
 import 'design_system.dart';
 import 'local_database.dart';
+import 'library_recovery.dart';
 import 'library_organizer.dart';
 import 'models.dart';
 
@@ -13,6 +14,14 @@ class LocalSettings {
 
   final SharedPreferencesAsync _preferences;
   final LocalDatabase? _database;
+  late final LibraryRecovery _historyRecovery = LibraryRecovery(
+    _preferences,
+    'history',
+  );
+  late final LibraryRecovery _savedRecovery = LibraryRecovery(
+    _preferences,
+    'saved',
+  );
   late final LibraryOrganizerStore organization = LibraryOrganizerStore(
     preferences: _preferences,
     database: _database,
@@ -39,6 +48,10 @@ class LocalSettings {
     final settings = LocalSettings(selectedPreferences, selectedDatabase);
     await settings._migrateLegacyStorage();
     await settings._migrateReadLater();
+    if (selectedDatabase != null) {
+      await settings._historyRecovery.reconcile(selectedDatabase);
+      await settings._savedRecovery.reconcile(selectedDatabase);
+    }
     return settings;
   }
 
@@ -159,22 +172,24 @@ class LocalSettings {
   }
 
   Future<List<FeedItem>> historyItems() =>
-      _database?.historyItems() ?? _readItems('library.history');
+      _database?.historyItems() ?? _historyRecovery.read();
 
   Future<void> addHistory(FeedItem item) async {
-    if (_database != null) return _database.addHistory(item);
-    final values = await historyItems();
-    values.removeWhere((FeedItem value) => value.key == item.key);
-    values.insert(0, item);
-    await _writeItems('library.history', values.take(100));
+    final database = _database;
+    if (database == null) return _historyRecovery.addHistory(item);
+    await database.addHistory(item);
+    await _historyRecovery.snapshot(database);
   }
 
-  Future<void> clearHistory() =>
-      _database?.clearHistory() ??
-      _preferences.setString('library.history', '[]');
+  Future<void> clearHistory() async {
+    final database = _database;
+    if (database == null) return _historyRecovery.clearHistory();
+    await database.clearHistory();
+    await _historyRecovery.snapshot(database);
+  }
 
   Future<List<FeedItem>> savedItems() =>
-      _database?.savedItems() ?? _readItems('library.saved');
+      _database?.savedItems() ?? _savedRecovery.read();
 
   Future<void> removeRecentForum(String forum) async {
     final normalized = normalizeForumName(forum);
@@ -187,11 +202,10 @@ class LocalSettings {
       _preferences.setStringList('forums.recent', <String>[]);
 
   Future<void> setSaved(FeedItem item, bool value) async {
-    if (_database != null) return _database.setSaved(item, value);
-    final values = await savedItems();
-    values.removeWhere((FeedItem existing) => existing.key == item.key);
-    if (value) values.insert(0, item.copyWith(favorited: true));
-    await _writeItems('library.saved', values.take(300));
+    final database = _database;
+    if (database == null) return _savedRecovery.setSaved(item, value);
+    await database.setSaved(item, value);
+    await _savedRecovery.snapshot(database);
   }
 
   Future<List<FeedItem>> readLaterItems() async {

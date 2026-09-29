@@ -11,6 +11,7 @@ import 'library_organizer.dart';
 import 'media_tools.dart';
 import 'models.dart';
 import 'reading_state_store.dart';
+import 'source_diagnostics.dart';
 
 class LibraryManagerScreen extends StatefulWidget {
   const LibraryManagerScreen({super.key, required this.controller});
@@ -73,7 +74,9 @@ class _LibraryManagerScreenState extends State<LibraryManagerScreen> {
         _selected.retainAll(_items.map((item) => item.key));
       });
     } catch (error) {
-      if (mounted && version == _loadVersion) setState(() => _error = '$error');
+      if (mounted && version == _loadVersion) {
+        setState(() => _error = safeLocalMessage(error));
+      }
     } finally {
       if (mounted && version == _loadVersion) setState(() => _busy = false);
     }
@@ -91,19 +94,17 @@ class _LibraryManagerScreenState extends State<LibraryManagerScreen> {
     try {
       await action();
     } catch (error) {
-      _message('本地操作未全部完成：$error；可重试，已保存的内容不会撤销');
+      _message('本地操作未全部完成：${safeLocalMessage(error)}；可重试，已保存的内容不会撤销');
     }
     if (mounted) await _load();
   }
 
-  Future<String?> _prompt(
-    String title, {
-    String initial = '',
-    String? hint,
-  }) => showDialog<String>(
-      context: context,
-      builder: (context) => _LibraryTextPrompt(title: title, initial: initial, hint: hint),
-    );
+  Future<String?> _prompt(String title, {String initial = '', String? hint}) =>
+      showDialog<String>(
+        context: context,
+        builder: (context) =>
+            _LibraryTextPrompt(title: title, initial: initial, hint: hint),
+      );
 
   Future<void> _create() async {
     final name = await _prompt('新建本地收藏夹');
@@ -304,7 +305,9 @@ class _LibraryManagerScreenState extends State<LibraryManagerScreen> {
         ],
       ),
       body: RefreshIndicator(
-        onRefresh: () async { if (!_busy) await _load(); },
+        onRefresh: () async {
+          if (!_busy) await _load();
+        },
         child: CustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
@@ -553,7 +556,11 @@ class _LibraryManagerScreenState extends State<LibraryManagerScreen> {
 }
 
 class _LibraryTextPrompt extends StatefulWidget {
-  const _LibraryTextPrompt({required this.title, required this.initial, this.hint});
+  const _LibraryTextPrompt({
+    required this.title,
+    required this.initial,
+    this.hint,
+  });
   final String title;
   final String initial;
   final String? hint;
@@ -564,16 +571,31 @@ class _LibraryTextPrompt extends StatefulWidget {
 class _LibraryTextPromptState extends State<_LibraryTextPrompt> {
   late final _input = TextEditingController(text: widget.initial);
   @override
-  void dispose() { _input.dispose(); super.dispose(); }
+  void dispose() {
+    _input.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) => AlertDialog(
     title: Text(widget.title),
-    content: TextField(controller: _input, autofocus: true,
+    content: TextField(
+      controller: _input,
+      autofocus: true,
       maxLength: widget.title == '编辑标签' ? 819 : 60,
       decoration: InputDecoration(hintText: widget.hint),
-      onSubmitted: (value) => Navigator.pop(context, value)),
-    actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-      FilledButton(onPressed: () => Navigator.pop(context, _input.text), child: const Text('保存'))],
+      onSubmitted: (value) => Navigator.pop(context, value),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('取消'),
+      ),
+      FilledButton(
+        onPressed: () => Navigator.pop(context, _input.text),
+        child: const Text('保存'),
+      ),
+    ],
   );
 }
 
@@ -604,7 +626,7 @@ class _LibraryBackupScreenState extends State<LibraryBackupScreen> {
     try {
       await action();
     } catch (error) {
-      if (mounted) setState(() => _status = '$error');
+      if (mounted) setState(() => _status = safeLocalMessage(error));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -622,7 +644,11 @@ class _LibraryBackupScreenState extends State<LibraryBackupScreen> {
       await Clipboard.setData(ClipboardData(text: text));
     }
     if (mounted) {
-      setState(() => _status = share ? '已打开系统文件分享。请选择安全的位置保存备份。' : '备份 JSON 已复制到剪贴板。请粘贴到安全的位置保存；剪贴板可被其他应用读取。');
+      setState(
+        () => _status = share
+            ? '已打开系统文件分享。请选择安全的位置保存备份。'
+            : '备份 JSON 已复制到剪贴板。请粘贴到安全的位置保存；剪贴板可被其他应用读取。',
+      );
     }
   });
 

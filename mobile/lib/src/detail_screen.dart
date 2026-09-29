@@ -21,6 +21,7 @@ import 'profile_screen.dart';
 import 'reading_preferences.dart';
 import 'reading_state_store.dart';
 import 'social_text.dart';
+import 'source_diagnostics.dart';
 
 export 'media_preview_screen.dart';
 
@@ -302,7 +303,9 @@ class _DetailScreenState extends State<DetailScreen> {
       setState(() => _completed = !_completed);
       _showMessage(_completed ? '已标记已读，稍后阅读列表保留记录' : '已标记未读');
     } catch (error) {
-      if (mounted) _showMessage('更新阅读状态失败：$error', error: true);
+      if (mounted) {
+        _showMessage('更新阅读状态失败：${safeLocalMessage(error)}', error: true);
+      }
     }
   }
 
@@ -372,7 +375,9 @@ class _DetailScreenState extends State<DetailScreen> {
       await _preferencesStore.save(result);
       if (mounted) setState(() => _readingPreferences = result);
     } catch (error) {
-      if (mounted) _showMessage('保存阅读设置失败：$error', error: true);
+      if (mounted) {
+        _showMessage('保存阅读设置失败：${safeLocalMessage(error)}', error: true);
+      }
     }
   }
 
@@ -436,7 +441,7 @@ class _DetailScreenState extends State<DetailScreen> {
     try {
       await MediaTools.shareText(link, title: _item.title);
     } catch (error) {
-      if (mounted) _showMessage('分享失败：$error', error: true);
+      if (mounted) _showMessage('分享失败：${safeLocalMessage(error)}', error: true);
     }
   }
 
@@ -555,7 +560,9 @@ class _DetailScreenState extends State<DetailScreen> {
       final value = await widget.controller.isReadLater(_item);
       if (mounted) setState(() => _readLater = value);
     } catch (error) {
-      if (mounted) _showMessage('读取稍后阅读状态失败：$error', error: true);
+      if (mounted) {
+        _showMessage('读取稍后阅读状态失败：${safeLocalMessage(error)}', error: true);
+      }
     } finally {
       if (mounted) setState(() => _readLaterWorking = false);
     }
@@ -575,7 +582,9 @@ class _DetailScreenState extends State<DetailScreen> {
       setState(() => _readLater = !current);
       _showMessage(current ? '已移出稍后阅读' : '已加入稍后阅读，可在“我的”中查看');
     } catch (error) {
-      if (mounted) _showMessage('更新稍后阅读失败：$error', error: true);
+      if (mounted) {
+        _showMessage('更新稍后阅读失败：${safeLocalMessage(error)}', error: true);
+      }
     } finally {
       if (mounted) setState(() => _readLaterWorking = false);
     }
@@ -590,7 +599,7 @@ class _DetailScreenState extends State<DetailScreen> {
       await Clipboard.setData(ClipboardData(text: value));
       if (mounted) _showMessage(link ? '帖子链接已复制' : '正文已复制');
     } catch (error) {
-      if (mounted) _showMessage('复制失败：$error', error: true);
+      if (mounted) _showMessage('复制失败：${safeLocalMessage(error)}', error: true);
     }
   }
 
@@ -791,7 +800,7 @@ class _DetailScreenState extends State<DetailScreen> {
     if (error != null) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(error.toString())));
+      ).showSnackBar(SnackBar(content: Text(safeSourceMessage(error))));
     }
   }
 
@@ -806,7 +815,7 @@ class _DetailScreenState extends State<DetailScreen> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text(error.toString())));
+        ).showSnackBar(SnackBar(content: Text(safeSourceMessage(error))));
       }
     } finally {
       _pendingCommentLikes.remove(comment.ref.id);
@@ -870,7 +879,7 @@ class _DetailScreenState extends State<DetailScreen> {
       await action();
       if (mounted && showSuccess) _showMessage(success);
     } catch (error) {
-      if (mounted) _showMessage(error.toString(), error: true);
+      if (mounted) _showMessage(safeSourceMessage(error), error: true);
     } finally {
       if (mounted) setState(() => _working = false);
     }
@@ -1053,13 +1062,16 @@ class _DetailScreenState extends State<DetailScreen> {
             if (_error != null && detail == null)
               SliverFillRemaining(
                 hasScrollBody: false,
-                child: _DetailFailure(error: _error.toString(), onRetry: _load),
+                child: _DetailFailure(
+                  error: safeSourceMessage(_error!),
+                  onRetry: _load,
+                ),
               )
             else ...<Widget>[
               if (_error != null)
                 SliverToBoxAdapter(
                   child: _InlineLoadFailure(
-                    message: '刷新失败：$_error',
+                    message: '刷新失败：${safeSourceMessage(_error!)}',
                     onRetry: _loading ? null : _load,
                   ),
                 ),
@@ -1207,7 +1219,7 @@ class _DetailScreenState extends State<DetailScreen> {
               else if (_paginationError != null)
                 SliverToBoxAdapter(
                   child: _InlineLoadFailure(
-                    message: '加载更多回复失败：$_paginationError',
+                    message: '加载更多回复失败：${safeSourceMessage(_paginationError!)}',
                     onRetry: _loading ? null : _loadMore,
                   ),
                 )
@@ -1905,7 +1917,7 @@ class _FloorRepliesScreenState extends State<_FloorRepliesScreen> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text(error.toString())));
+        ).showSnackBar(SnackBar(content: Text(safeSourceMessage(error))));
       }
     } finally {
       _pendingCommentLikes.remove(comment.ref.id);
@@ -2089,7 +2101,7 @@ class _FloorRepliesScreenState extends State<_FloorRepliesScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(error.toString()),
+          content: Text(safeSourceMessage(error)),
           backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
@@ -2150,7 +2162,7 @@ class _FloorRepliesScreenState extends State<_FloorRepliesScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
-                      Text('读取回复失败：$_error'),
+                      Text('读取回复失败：${safeSourceMessage(_error!)}'),
                       TextButton(
                         onPressed: _loading || _loadingMore
                             ? null
@@ -2449,7 +2461,7 @@ class _TiebaInteractionScreenState extends State<_TiebaInteractionScreen> {
                 ? AppStateView(
                     icon: Icons.public_off_rounded,
                     title: '贴吧页面打开失败',
-                    message: _error.toString(),
+                    message: safeSourceMessage(_error!),
                     actionLabel: '重试',
                     onAction: _load,
                   )
@@ -2609,7 +2621,7 @@ class _VideoScreenState extends State<_VideoScreen> {
                   mainAxisSize: MainAxisSize.min,
                   children: <Widget>[
                     Text(
-                      _error.toString(),
+                      safeSourceMessage(_error!),
                       textAlign: TextAlign.center,
                       style: const TextStyle(color: Colors.white),
                     ),

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -825,7 +826,8 @@ class _ScannedTransfer {
   final String verificationCode;
 }
 
-String _friendlyError(Object error) => error.toString().replaceFirst(
-  RegExp(r'^(FormatException|StateError|SocketException):\s*'),
-  '',
-);
+String _friendlyError(Object error) => error is FormatException
+    ? error.message
+    : error is SocketException
+    ? '局域网连接失败，请确认两台设备位于同一 Wi-Fi 后重试'
+    : '设备迁移暂时失败，请重试';
