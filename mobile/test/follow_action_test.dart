@@ -102,6 +102,27 @@ void main() {
   );
 
   test(
+    'duplicate taps do not send a second write while confirmation is pending',
+    () async {
+      final response = Completer<void>();
+      var requests = 0;
+      xhs.onFollow = (_) {
+        requests++;
+        return response.future;
+      };
+      final first = controller.follow(_profile, true);
+      await expectLater(controller.follow(_profile, true), throwsStateError);
+      expect(requests, 1);
+      response.complete();
+      await first;
+      expect(controller.isFollowing(_profile), isTrue);
+      xhs.onFollow = (_) async {};
+      await controller.follow(_profile, false);
+      expect(controller.isFollowing(_profile), isFalse);
+    },
+  );
+
+  test(
     'confirmed unfollow overrides stale author and profile snapshots',
     () async {
       await controller.follow(_profile, true);
@@ -111,6 +132,21 @@ void main() {
         isFalse,
       );
       expect(controller.items.single.author.following, isFalse);
+      expect(await settings.followingProfiles(), isEmpty);
+    },
+  );
+
+  test(
+    'a late response from the previous account does not alter the new account',
+    () async {
+      final response = Completer<void>();
+      xhs.onFollow = (_) => response.future;
+      final action = controller.follow(_profile, true);
+      await controller.accountChanged(SourceId.xhs);
+      response.complete();
+      await expectLater(action, throwsStateError);
+      expect(controller.isFollowing(_profile), isFalse);
+      expect(await settings.confirmedFollowing(), isEmpty);
       expect(await settings.followingProfiles(), isEmpty);
     },
   );
@@ -150,6 +186,28 @@ void main() {
       isNull,
     );
   });
+
+  test(
+    'confirmed unfollow survives restart and account changes clear it',
+    () async {
+      await controller.follow(_profile, true);
+      await controller.follow(_profile, false);
+      final restored = MixsocialController(
+        xhs: xhs,
+        tieba: _TiebaSource(),
+        settings: settings,
+      );
+      addTearDown(restored.dispose);
+      await restored.reloadLocalPreferences();
+      expect(
+        restored.isFollowing(_profile, fallback: true, observed: true),
+        isFalse,
+      );
+      await restored.accountChanged(SourceId.xhs);
+      expect(await settings.confirmedFollowing(), isEmpty);
+      expect(restored.isFollowing(_profile, observed: true), isTrue);
+    },
+  );
 
   test('parallel local relationship writes do not erase one another', () async {
     const second = ProfileRef(source: SourceId.xhs, id: 'second');

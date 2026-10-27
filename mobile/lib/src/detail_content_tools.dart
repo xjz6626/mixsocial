@@ -27,7 +27,7 @@ String? contentLink(ContentRef ref) {
       return Uri.https('tieba.baidu.com', '/p/$id').toString();
     case SourceId.zhihu:
       if (!RegExp(r'^[1-9][0-9]*$').hasMatch(id)) return null;
-      return switch (ref.token) {
+      return switch (ref.contentKind) {
         'question' => Uri.https('www.zhihu.com', '/question/$id').toString(),
         'article' => Uri.https('zhuanlan.zhihu.com', '/p/$id').toString(),
         'pin' => Uri.https('www.zhihu.com', '/pin/$id').toString(),

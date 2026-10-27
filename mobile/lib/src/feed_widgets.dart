@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import 'design_system.dart';
@@ -35,11 +36,17 @@ class FeedMediaPreview extends StatelessWidget {
                       item.ref.source,
                       MediaImageQuality.thumbnail,
                     );
+              final actualRatio = media?.aspectRatio ?? ratio;
+              // BoxFit.cover crops long images: size the decode for the visible
+              // width as well as the original image's longer edge.
               final automaticDimension =
-                  (constraints.biggest.longestSide *
+                  (math.max(
+                            constraints.maxWidth * math.max(1, 1 / actualRatio),
+                            constraints.maxHeight * math.max(1, actualRatio),
+                          ) *
                           MediaQuery.devicePixelRatioOf(context))
                       .ceil()
-                      .clamp(480, 1280);
+                      .clamp(480, 2560);
               final decodeDimension = maxDimension > 0
                   ? maxDimension
                   : automaticDimension;
@@ -52,6 +59,7 @@ class FeedMediaPreview extends StatelessWidget {
                       fallbackUrls: candidates.skip(1).toList(),
                       source: item.ref.source,
                       fit: BoxFit.cover,
+                      filterQuality: FilterQuality.high,
                       maxDimension: decodeDimension,
                       semanticLabel: media.kind == 'video' ? '视频预览' : '图片预览',
                       errorBuilder: (context, error, stackTrace) =>

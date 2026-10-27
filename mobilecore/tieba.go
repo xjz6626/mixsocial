@@ -123,6 +123,48 @@ func (t *Tieba) FollowingForumsWithRequest(requestID string) (string, error) {
 	return encode(forums, err)
 }
 
+func (t *Tieba) FollowWithRequest(requestID, refJSON string, value bool) error {
+	ref, err := relationshipRef(refJSON, domain.SourceTieba)
+	if err != nil {
+		return err
+	}
+	ctx, finish := t.begin(requestID)
+	defer finish()
+	return t.snapshot().Follow(ctx, ref, value)
+}
+
+func (t *Tieba) FollowingWithRequest(requestID, refJSON string) (string, error) {
+	ref, err := relationshipRef(refJSON, domain.SourceTieba)
+	if err != nil {
+		return "", err
+	}
+	ctx, finish := t.begin(requestID)
+	defer finish()
+	value, err := t.snapshot().Following(ctx, ref)
+	return encode(map[string]bool{"following": value}, err)
+}
+
+func (t *Tieba) FollowForumWithRequest(requestID, forum string, value bool) error {
+	ctx, finish := t.begin(requestID)
+	defer finish()
+	return t.snapshot().FollowForum(ctx, forum, value)
+}
+
+func (t *Tieba) ForumFollowingWithRequest(requestID, forum string) (string, error) {
+	ctx, finish := t.begin(requestID)
+	defer finish()
+	value, err := t.snapshot().ForumFollowing(ctx, forum)
+	return encode(map[string]bool{"following": value}, err)
+}
+
+func relationshipRef(refJSON string, sourceID domain.SourceID) (domain.ProfileRef, error) {
+	var ref domain.ProfileRef
+	if json.Unmarshal([]byte(refJSON), &ref) != nil || ref.Source != sourceID || strings.TrimSpace(ref.ID) == "" || strings.Trim(ref.ID, "0") == "" {
+		return domain.ProfileRef{}, fmt.Errorf("无效的作者关注引用")
+	}
+	return ref, nil
+}
+
 func (t *Tieba) ProfileWithRequest(requestID, refJSON, cursor string) (string, error) {
 	var ref domain.ProfileRef
 	if err := json.Unmarshal([]byte(refJSON), &ref); err != nil {

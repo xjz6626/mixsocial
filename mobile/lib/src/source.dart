@@ -51,6 +51,10 @@ abstract interface class RelationshipInteractor {
   Future<void> follow(ProfileRef profile, bool value);
 }
 
+abstract interface class RelationshipStateReader {
+  Future<bool> following(ProfileRef profile);
+}
+
 abstract interface class CommentInteractor {
   Future<void> commentLike(ContentRef ref, ContentRef comment, bool value);
 }

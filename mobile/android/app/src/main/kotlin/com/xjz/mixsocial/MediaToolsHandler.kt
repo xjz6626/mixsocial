@@ -54,6 +54,14 @@ class MediaToolsHandler(private val activity: Activity, messenger: BinaryMesseng
     private fun handle(call: MethodCall, result: MethodChannel.Result) {
         try {
             when (call.method) {
+                "openUrl" -> {
+                    val value = requireNotNull(call.argument<String>("url"))
+                    val uri = android.net.Uri.parse(value)
+                    require(value.length <= 8192 && uri.scheme in setOf("https", "http") &&
+                        !uri.host.isNullOrEmpty() && uri.userInfo == null)
+                    activity.startActivity(Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE))
+                    result.success(null)
+                }
                 "initialLink" -> {
                     ready = true
                     result.success(if (pendingLinks.isEmpty()) null else pendingLinks.removeFirst())

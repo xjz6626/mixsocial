@@ -18,7 +18,7 @@ class CommentDraftStore {
   static final Map<String, Future<void>> _pending = <String, Future<void>>{};
 
   static String draftKey(ContentRef content, {ContentRef? target}) =>
-      '${content.source.id}:${Uri.encodeComponent(content.id)}:${target == null ? 'comment' : 'reply:${Uri.encodeComponent(target.id)}'}';
+      '${content.source.id}:${content.source == SourceId.zhihu ? '${content.contentKind}:' : ''}${Uri.encodeComponent(content.id)}:${target == null ? 'comment' : 'reply:${Uri.encodeComponent(target.id)}'}';
 
   Future<CommentDraft?> read(String key) => _serialize(key, () => _read(key));
 

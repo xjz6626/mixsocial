@@ -119,6 +119,7 @@ class _ForumHubScreenState extends State<ForumHubScreen> {
   @override
   Widget build(BuildContext context) {
     final forums = <String>{..._pinned, ..._following}
+        .where((name) => !widget.controller.isForumBlocked(name))
         .where((name) => name.toLowerCase().contains(_filter.toLowerCase()))
         .toList();
     return Scaffold(
@@ -165,6 +166,9 @@ class _ForumHubScreenState extends State<ForumHubScreen> {
                         spacing: 8,
                         runSpacing: 8,
                         children: _recent
+                            .where(
+                              (name) => !widget.controller.isForumBlocked(name),
+                            )
                             .map(
                               (String forum) => InputChip(
                                 avatar: const Icon(Icons.history, size: 17),
@@ -289,6 +293,65 @@ class _ForumScreenState extends State<ForumScreen> {
   bool _loading = true;
   bool _loadingMore = false;
   bool _searching = false;
+  bool? _following;
+  bool _checkingFollow = false;
+  bool _followWorking = false;
+  int _followingGeneration = 0;
+
+  void _relationshipsChanged() {
+    if (mounted) {
+      setState(() {
+        final confirmed = widget.controller.confirmedForumFollowing(
+          widget.forum,
+        );
+        if (confirmed != null) {
+          _following = confirmed;
+          _checkingFollow = false;
+          ++_followingGeneration;
+        }
+      });
+    }
+  }
+
+  Future<void> _loadFollowing() async {
+    final generation = ++_followingGeneration;
+    setState(() => _checkingFollow = true);
+    try {
+      final value = await widget.controller.forumFollowing(widget.forum);
+      if (mounted && generation == _followingGeneration) {
+        setState(() => _following = value);
+      }
+    } catch (_) {
+      if (mounted && generation == _followingGeneration) {
+        setState(() => _following = null);
+      }
+    } finally {
+      if (mounted && generation == _followingGeneration) {
+        setState(() => _checkingFollow = false);
+      }
+    }
+  }
+
+  Future<void> _manageFollow() async {
+    if (_followWorking || _checkingFollow) return;
+    if (_following == null) {
+      await _loadFollowing();
+      return;
+    }
+    final value = !_following!;
+    ++_followingGeneration;
+    setState(() => _followWorking = true);
+    try {
+      await widget.controller.followForum(widget.forum, value);
+      if (!mounted) return;
+      setState(() => _following = value);
+      _message(value ? '已关注 ${widget.forum}吧' : '已取消关注 ${widget.forum}吧');
+    } catch (error) {
+      if (mounted) _message(safeSourceMessage(error));
+    } finally {
+      if (mounted) setState(() => _followWorking = false);
+    }
+  }
 
   @override
   void initState() {
@@ -301,11 +364,14 @@ class _ForumScreenState extends State<ForumScreen> {
       }
     });
     unawaited(_initialize());
+    widget.controller.addListener(_relationshipsChanged);
+    unawaited(_loadFollowing());
   }
 
   @override
   void dispose() {
     _scrollController.dispose();
+    widget.controller.removeListener(_relationshipsChanged);
     _searchController.dispose();
     super.dispose();
   }
@@ -378,7 +444,7 @@ class _ForumScreenState extends State<ForumScreen> {
       );
       if (!mounted || generation != _generation) return;
       setState(() {
-        _items = widget.controller.prepareItems(page.items);
+        _items = page.items;
         _nextCursor = page.nextCursor;
         _hasMore = page.hasMore && page.nextCursor.isNotEmpty;
       });
@@ -421,9 +487,7 @@ class _ForumScreenState extends State<ForumScreen> {
       setState(() {
         _items = <FeedItem>[
           ..._items,
-          ...widget.controller.prepareItems(
-            page.items.where((FeedItem item) => seen.add(item.key)),
-          ),
+          ...page.items.where((FeedItem item) => seen.add(item.key)),
         ];
         _nextCursor = page.nextCursor;
         _hasMore =
@@ -471,10 +535,25 @@ class _ForumScreenState extends State<ForumScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final visibleItems = widget.controller.prepareItems(_items);
     return Scaffold(
       appBar: AppBar(
         title: Text('${widget.forum}吧'),
         actions: <Widget>[
+          TextButton(
+            onPressed: _checkingFollow || _followWorking ? null : _manageFollow,
+            child: Text(
+              _followWorking
+                  ? '正在提交…'
+                  : _checkingFollow
+                  ? '读取关注…'
+                  : _following == null
+                  ? '重试关注状态'
+                  : _following!
+                  ? '已关注'
+                  : '关注',
+            ),
+          ),
           IconButton(
             tooltip: '吧内搜索',
             onPressed: () => setState(() => _searching = !_searching),
@@ -540,12 +619,17 @@ class _ForumScreenState extends State<ForumScreen> {
                 },
               ),
             ),
-          if (_loading && _items.isNotEmpty)
+          if (_loading && visibleItems.isNotEmpty)
             const LinearProgressIndicator(minHeight: 2),
           Expanded(
             child: RefreshIndicator(
-              onRefresh: _load,
-              child: _loading && _items.isEmpty
+              onRefresh: () async {
+                await Future.wait([
+                  _load(),
+                  if (!_followWorking) _loadFollowing(),
+                ]);
+              },
+              child: _loading && visibleItems.isEmpty
                   ? const CustomScrollView(
                       physics: AlwaysScrollableScrollPhysics(),
                       slivers: <Widget>[
@@ -558,7 +642,7 @@ class _ForumScreenState extends State<ForumScreen> {
                         ),
                       ],
                     )
-                  : _error != null && _items.isEmpty
+                  : _error != null && visibleItems.isEmpty
                   ? CustomScrollView(
                       physics: const AlwaysScrollableScrollPhysics(),
                       slivers: <Widget>[
@@ -575,7 +659,7 @@ class _ForumScreenState extends State<ForumScreen> {
                         ),
                       ],
                     )
-                  : _items.isEmpty
+                  : visibleItems.isEmpty
                   ? CustomScrollView(
                       physics: const AlwaysScrollableScrollPhysics(),
                       slivers: <Widget>[
@@ -597,10 +681,10 @@ class _ForumScreenState extends State<ForumScreen> {
                       controller: _scrollController,
                       physics: const AlwaysScrollableScrollPhysics(),
                       padding: const EdgeInsets.fromLTRB(12, 4, 12, 28),
-                      itemCount: _items.length + 1,
+                      itemCount: visibleItems.length + 1,
                       separatorBuilder: (_, _) => const SizedBox(height: 8),
                       itemBuilder: (BuildContext context, int index) {
-                        if (index == _items.length) {
+                        if (index == visibleItems.length) {
                           if (_loadingMore) {
                             return const Padding(
                               padding: EdgeInsets.all(18),
@@ -656,9 +740,9 @@ class _ForumScreenState extends State<ForumScreen> {
                           child: ConstrainedBox(
                             constraints: const BoxConstraints(maxWidth: 920),
                             child: _ForumFeedCard(
-                              item: _items[index],
+                              item: visibleItems[index],
                               density: widget.controller.density,
-                              onTap: () => _open(_items[index]),
+                              onTap: () => _open(visibleItems[index]),
                             ),
                           ),
                         );

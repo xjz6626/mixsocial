@@ -116,6 +116,48 @@ void main() {
     }
   });
 
+  testWidgets(
+    'XHS portrait cover uses high URL and enough pixels after crop on a 3x screen',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+      try {
+        final portrait = _item.copyWith(
+          media: const [
+            MediaItem(
+              kind: 'image',
+              url: 'https://sns-webpic.xhscdn.com/high.jpg',
+              previewUrl: 'https://sns-webpic.xhscdn.com/preview.jpg',
+              width: 600,
+              height: 2400,
+            ),
+          ],
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: MediaQuery(
+                data: const MediaQueryData(devicePixelRatio: 3),
+                child: SizedBox(
+                  width: 200,
+                  child: FeedMediaPreview(item: portrait),
+                ),
+              ),
+            ),
+          ),
+        );
+        final image = tester.widget<SourceNetworkImage>(
+          find.byType(SourceNetworkImage),
+        );
+        expect(image.url, endsWith('/high.jpg'));
+        expect(image.maxDimension, 2400);
+        expect(image.filterQuality, FilterQuality.high);
+        await tester.pumpWidget(const SizedBox.shrink());
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    },
+  );
+
   test('compactCount formats Chinese large-number units', () {
     expect(compactCount(9999), '9999');
     expect(compactCount(10000), '1.0万');

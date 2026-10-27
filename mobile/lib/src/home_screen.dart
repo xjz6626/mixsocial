@@ -15,6 +15,7 @@ import 'feed_widgets.dart';
 import 'forum_screen.dart';
 import 'login_screen.dart';
 import 'models.dart';
+import 'relationship_actions.dart';
 import 'profile_screen.dart';
 import 'search_history.dart';
 import 'xhs_web_source.dart';
@@ -37,6 +38,32 @@ class _HomeScreenState extends State<HomeScreen> with RestorationMixin {
   final Map<SourceId, ScrollController> _scrollControllers =
       <SourceId, ScrollController>{};
   final ScrollController _searchScrollController = ScrollController();
+  final Map<String, double> _sessionOffsets = {};
+
+  void _rememberVisibleOffset() {
+    final scroll = _destination == 1
+        ? _searchScrollController
+        : _scrollControllers[widget.controller.source];
+    if (scroll?.hasClients ?? false) {
+      _sessionOffsets[widget.controller.sessionKey] = scroll!.offset;
+    }
+  }
+
+  void _restoreVisibleOffset() {
+    final key = widget.controller.sessionKey;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || key != widget.controller.sessionKey) return;
+      final scroll = _destination == 1
+          ? _searchScrollController
+          : _scrollControllers[widget.controller.source];
+      if (scroll?.hasClients ?? false) {
+        scroll!.jumpTo(
+          (_sessionOffsets[key] ?? 0).clamp(0, scroll.position.maxScrollExtent),
+        );
+      }
+    });
+  }
+
   final TextEditingController _searchTextController = TextEditingController();
   late final SearchHistoryStore _searchHistoryStore =
       widget.searchHistoryStore ?? SearchHistoryStore();
@@ -228,6 +255,10 @@ class _HomeScreenState extends State<HomeScreen> with RestorationMixin {
   Future<void> _navigateToSearch(SearchNavigationRequest request) async {
     if (!mounted) return;
     Navigator.of(context).popUntil((Route<dynamic> route) => route.isFirst);
+    if (_destination != 1) {
+      _rememberVisibleOffset();
+      widget.controller.enterSearch();
+    }
     setState(() => _destination = 1);
     _searchTextController.text = request.query;
     final version = ++_searchNavigationVersion;
@@ -250,6 +281,7 @@ class _HomeScreenState extends State<HomeScreen> with RestorationMixin {
 
   void _loadMoreNearEnd(ScrollController scrollController) {
     if (scrollController.hasClients &&
+        widget.controller.paginationError == null &&
         scrollController.position.extentAfter < 640) {
       unawaited(widget.controller.loadMore());
     }
@@ -274,6 +306,7 @@ class _HomeScreenState extends State<HomeScreen> with RestorationMixin {
     SourceId source, {
     bool preserveSearch = false,
   }) async {
+    _rememberVisibleOffset();
     final previous = widget.controller.source;
     final previousScroll = preserveSearch ? null : _scrollControllers[previous];
     if (previousScroll?.hasClients ?? false) {
@@ -286,12 +319,7 @@ class _HomeScreenState extends State<HomeScreen> with RestorationMixin {
       source,
       preserveSearch: preserveSearch,
     );
-    if (mounted &&
-        widget.controller.source == source &&
-        preserveSearch &&
-        _searchScrollController.hasClients) {
-      _searchScrollController.jumpTo(0);
-    }
+    _restoreVisibleOffset();
   }
 
   Future<void> _selectSearchSource(SourceId source) async {
@@ -315,9 +343,9 @@ class _HomeScreenState extends State<HomeScreen> with RestorationMixin {
   }
 
   Future<void> _selectChannel(FeedChannel channel) async {
-    final scrollController = _scrollControllers[widget.controller.source];
-    if (scrollController?.hasClients ?? false) scrollController!.jumpTo(0);
+    _rememberVisibleOffset();
     await widget.controller.selectChannel(channel);
+    _restoreVisibleOffset();
   }
 
   Future<void> _submitSearch(String value) async {
@@ -329,7 +357,7 @@ class _HomeScreenState extends State<HomeScreen> with RestorationMixin {
       selection: TextSelection.collapsed(offset: query.length),
     );
     FocusManager.instance.primaryFocus?.unfocus();
-    if (_searchScrollController.hasClients) _searchScrollController.jumpTo(0);
+    _rememberVisibleOffset();
     if (query.isNotEmpty) {
       final source = widget.controller.source;
       unawaited(
@@ -340,6 +368,7 @@ class _HomeScreenState extends State<HomeScreen> with RestorationMixin {
       );
     }
     await widget.controller.search(query);
+    _restoreVisibleOffset();
   }
 
   Future<void> _selectDestination(int value) async {
@@ -357,10 +386,18 @@ class _HomeScreenState extends State<HomeScreen> with RestorationMixin {
       return;
     }
     final leavingSearch = _destination == 1 && value != 1;
+    _rememberVisibleOffset();
+    if (value == 1) widget.controller.enterSearch();
     _searchNavigationVersion++;
     unawaited(HapticFeedback.selectionClick());
     setState(() => _destination = value);
     if (leavingSearch) await widget.controller.restoreFeed();
+    if (mounted) {
+      if (value == 1) {
+        _searchTextController.text = widget.controller.searchQuery;
+      }
+      _restoreVisibleOffset();
+    }
   }
 
   void _openItem(FeedItem item) {
@@ -414,6 +451,10 @@ class _HomeScreenState extends State<HomeScreen> with RestorationMixin {
     if (filters != null) {
       await widget.controller.setXhsSearchFilters(filters);
     }
+  }
+
+  Future<void> _authorActions(FeedItem item) async {
+    await showAuthorActions(context, widget.controller, item.author);
   }
 
   Future<void> _blockForum(FeedItem item) async {
@@ -496,6 +537,7 @@ class _HomeScreenState extends State<HomeScreen> with RestorationMixin {
                     onAuthorTap: _openProfile,
                     onForumTap: _openForum,
                     onBlockForum: _blockForum,
+                    onAuthorActions: _authorActions,
                   ),
           ),
         ],
@@ -513,6 +555,7 @@ class _HomeScreenState extends State<HomeScreen> with RestorationMixin {
         onAuthorTap: _openProfile,
         onForumTap: _openForum,
         onBlockForum: _blockForum,
+        onAuthorActions: _authorActions,
         onXhsFilters: _openXhsFilters,
       ),
       AccountScreen(controller: controller),
@@ -643,6 +686,7 @@ class _SearchPage extends StatelessWidget {
     required this.onAuthorTap,
     required this.onForumTap,
     required this.onBlockForum,
+    required this.onAuthorActions,
     required this.onXhsFilters,
   });
 
@@ -658,6 +702,7 @@ class _SearchPage extends StatelessWidget {
   final ValueChanged<Author> onAuthorTap;
   final ValueChanged<String> onForumTap;
   final ValueChanged<FeedItem> onBlockForum;
+  final ValueChanged<FeedItem> onAuthorActions;
   final VoidCallback onXhsFilters;
 
   @override
@@ -730,6 +775,7 @@ class _SearchPage extends StatelessWidget {
                   onAuthorTap: onAuthorTap,
                   onForumTap: onForumTap,
                   onBlockForum: onBlockForum,
+                  onAuthorActions: onAuthorActions,
                 ),
         ),
       ],
@@ -1037,6 +1083,56 @@ class _ChannelSelector extends StatelessWidget {
   }
 }
 
+class FeedSourceStatusBar extends StatelessWidget {
+  const FeedSourceStatusBar({super.key, required this.controller});
+  final MixsocialController controller;
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+    child: Row(
+      children: [
+        for (final id in [
+          SourceId.tieba,
+          SourceId.xhs,
+          if (controller.zhihu.enabled) SourceId.zhihu,
+        ])
+          if (controller.source == SourceId.all || controller.source == id)
+            Expanded(
+              child: Tooltip(
+                message: controller.sourceErrors[id] ?? id.label,
+                child: InkWell(
+                  onTap:
+                      !controller.loading &&
+                          controller.sourceErrors.containsKey(id)
+                      ? () => controller.retrySource(id)
+                      : null,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Text(
+                      '${id.label} ${controller.sourceErrors.containsKey(id)
+                          ? '重试 ↻'
+                          : controller.sourceLoading.contains(id)
+                          ? '加载中'
+                          : controller.loading
+                          ? '就绪'
+                          : '${controller.items.where((item) => item.ref.source == id).length} 条'}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: controller.sourceErrors.containsKey(id)
+                            ? Theme.of(context).colorScheme.error
+                            : Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+      ],
+    ),
+  );
+}
+
 class _FeedBody extends StatelessWidget {
   const _FeedBody({
     required this.controller,
@@ -1045,6 +1141,7 @@ class _FeedBody extends StatelessWidget {
     required this.onAuthorTap,
     required this.onForumTap,
     required this.onBlockForum,
+    required this.onAuthorActions,
     this.storageKey,
   });
 
@@ -1054,6 +1151,7 @@ class _FeedBody extends StatelessWidget {
   final ValueChanged<Author> onAuthorTap;
   final ValueChanged<String> onForumTap;
   final ValueChanged<FeedItem> onBlockForum;
+  final ValueChanged<FeedItem> onAuthorActions;
   final String? storageKey;
 
   @override
@@ -1075,6 +1173,11 @@ class _FeedBody extends StatelessWidget {
                 message: controller.error!,
                 onRetry: controller.refresh,
               ),
+            ),
+          if (controller.source == SourceId.all ||
+              controller.sourceErrors.isNotEmpty)
+            SliverToBoxAdapter(
+              child: FeedSourceStatusBar(controller: controller),
             ),
           if (controller.notices.isNotEmpty)
             SliverToBoxAdapter(child: _Notices(messages: controller.notices)),
@@ -1143,6 +1246,8 @@ class _FeedBody extends StatelessWidget {
                           onForumTap: onForumTap,
                           onBlockForum: () =>
                               onBlockForum(controller.items[index]),
+                          onAuthorActions: () =>
+                              onAuthorActions(controller.items[index]),
                         ),
                   );
                 },
@@ -1179,6 +1284,8 @@ class _FeedBody extends StatelessWidget {
                           onForumTap: onForumTap,
                           onBlockForum: () =>
                               onBlockForum(controller.items[index]),
+                          onAuthorActions: () =>
+                              onAuthorActions(controller.items[index]),
                         ),
                       ),
                     ),
@@ -1249,6 +1356,7 @@ class MasonryFeedCard extends StatelessWidget {
     this.onAuthorTap,
     this.onForumTap,
     this.onBlockForum,
+    this.onAuthorActions,
   });
 
   final FeedItem item;
@@ -1257,6 +1365,7 @@ class MasonryFeedCard extends StatelessWidget {
   final VoidCallback? onAuthorTap;
   final ValueChanged<String>? onForumTap;
   final VoidCallback? onBlockForum;
+  final VoidCallback? onAuthorActions;
 
   @override
   Widget build(BuildContext context) {
@@ -1265,6 +1374,7 @@ class MasonryFeedCard extends StatelessWidget {
       key: Key('masonry-${item.ref.source.id}-${item.ref.id}'),
       child: InkWell(
         onTap: onTap,
+        onLongPress: onAuthorActions,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
@@ -1350,6 +1460,13 @@ class MasonryFeedCard extends StatelessWidget {
                           ),
                         ),
                       ),
+                      if (onAuthorActions != null &&
+                          hasAuthorIdentity(item.author))
+                        IconButton(
+                          tooltip: '关注与屏蔽作者',
+                          onPressed: onAuthorActions,
+                          icon: const Icon(Icons.more_horiz, size: 18),
+                        ),
                       CompactStat(
                         icon: Icons.favorite_border,
                         value: item.stats.likes,
@@ -1375,6 +1492,7 @@ class ListFeedCard extends StatelessWidget {
     this.onAuthorTap,
     this.onForumTap,
     this.onBlockForum,
+    this.onAuthorActions,
   });
 
   final FeedItem item;
@@ -1383,6 +1501,7 @@ class ListFeedCard extends StatelessWidget {
   final VoidCallback? onAuthorTap;
   final ValueChanged<String>? onForumTap;
   final VoidCallback? onBlockForum;
+  final VoidCallback? onAuthorActions;
 
   @override
   Widget build(BuildContext context) {
@@ -1392,6 +1511,7 @@ class ListFeedCard extends StatelessWidget {
       key: Key('list-${item.ref.source.id}-${item.ref.id}'),
       child: InkWell(
         onTap: onTap,
+        onLongPress: onAuthorActions,
         child: Padding(
           padding: EdgeInsets.fromLTRB(
             14,
@@ -1429,6 +1549,12 @@ class ListFeedCard extends StatelessWidget {
                     ),
                   ] else
                     const Spacer(),
+                  if (onAuthorActions != null && hasAuthorIdentity(item.author))
+                    IconButton(
+                      tooltip: '关注与屏蔽作者',
+                      onPressed: onAuthorActions,
+                      icon: const Icon(Icons.more_horiz, size: 19),
+                    ),
                   if (item.publishedAt != null)
                     Text(
                       _relativeTime(item.publishedAt!),

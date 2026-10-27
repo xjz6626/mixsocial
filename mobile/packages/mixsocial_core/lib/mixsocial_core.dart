@@ -87,6 +87,18 @@ class MixsocialCore {
         '[]';
   }
 
+  static Future<void> followTieba(String refJson, bool value) =>
+      _invoke<void>('tieba.follow', {'ref': refJson, 'value': value});
+
+  static Future<String> followingTieba(String refJson) async =>
+      (await _invoke<String>('tieba.following', {'ref': refJson})) ?? '{}';
+
+  static Future<void> followForumTieba(String forum, bool value) =>
+      _invoke<void>('tieba.followForum', {'forum': forum, 'value': value});
+
+  static Future<String> forumFollowingTieba(String forum) async =>
+      (await _invoke<String>('tieba.forumFollowing', {'forum': forum})) ?? '{}';
+
   static Future<String> profileTieba(
     String refJson, {
     String cursor = '',
@@ -165,10 +177,23 @@ class MixsocialCore {
       })) ??
       '{"comments":[]}';
 
+  static Future<String> zhihuAnswers(String refJson, String cursor) async =>
+      (await _invoke<String>('zhihu.answers', <String, Object>{
+        'ref': refJson,
+        'cursor': cursor,
+      })) ??
+      '{"items":[]}';
+
   static Future<void> likeZhihu(String refJson, bool value) => _invoke<void>(
     'zhihu.like',
     <String, Object>{'ref': refJson, 'value': value},
   );
+
+  static Future<void> followZhihu(String refJson, bool value) =>
+      _invoke<void>('zhihu.follow', {'ref': refJson, 'value': value});
+
+  static Future<String> followingZhihu(String refJson) async =>
+      (await _invoke<String>('zhihu.following', {'ref': refJson})) ?? '{}';
 
   static Future<void> commentZhihu(String refJson, String body) =>
       _invoke<void>('zhihu.comment', <String, Object>{

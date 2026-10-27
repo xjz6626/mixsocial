@@ -52,10 +52,13 @@ class LibraryBackup {
             'source': item.ref.source.id,
             'id': item.ref.id,
             if (item.ref.source == SourceId.zhihu &&
-                const {'answer', 'question', 'article', 'pin'}.contains(
-                  item.ref.token,
-                ))
-              'kind': item.ref.token,
+                const {
+                  'answer',
+                  'question',
+                  'article',
+                  'pin',
+                }.contains(item.ref.contentKind))
+              'kind': item.ref.contentKind,
             if (item.ref.source == SourceId.zhihu &&
                 item.ref.parentId.isNotEmpty)
               'parentId': item.ref.parentId,

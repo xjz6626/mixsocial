@@ -152,7 +152,7 @@ class _AccountScreenState extends State<AccountScreen> {
         _xhsLoggedIn = true;
         _xhsStatusError = null;
       });
-      await _refreshFeed();
+      await _refreshFeed(SourceId.xhs);
     }
   }
 
@@ -168,7 +168,7 @@ class _AccountScreenState extends State<AccountScreen> {
       _tiebaCredentialSaved = true;
       _tiebaStatus = widget.controller.tieba.sessionStatus;
     });
-    await _refreshFeed();
+    await _refreshFeed(SourceId.tieba);
   }
 
   Future<void> _openZhihuLogin() async {
@@ -183,7 +183,7 @@ class _AccountScreenState extends State<AccountScreen> {
       _zhihuCredentialSaved = true;
       _zhihuStatus = widget.controller.zhihu.sessionStatus;
     });
-    await _refreshFeed();
+    await _refreshFeed(SourceId.zhihu);
   }
 
   Future<void> _openXhsProfile() async {
@@ -309,7 +309,7 @@ class _AccountScreenState extends State<AccountScreen> {
           _tiebaStatus = widget.controller.tieba.sessionStatus;
         });
       }
-      await _refreshFeed();
+      await _refreshFeed(SourceId.tieba);
       if (mounted) _showMessage('贴吧登录成功，BDUSS 已保存到系统安全存储');
     });
   }
@@ -385,7 +385,7 @@ class _AccountScreenState extends State<AccountScreen> {
           _zhihuStatus = widget.controller.zhihu.sessionStatus;
         });
       }
-      await _refreshFeed();
+      await _refreshFeed(SourceId.zhihu);
       if (mounted) _showMessage('知乎登录成功，Cookie 已保存到系统安全存储');
     });
   }
@@ -417,7 +417,7 @@ class _AccountScreenState extends State<AccountScreen> {
           _tiebaStatus = const TiebaSessionStatus(TiebaSessionState.signedOut);
         });
       }
-      await _refreshFeed();
+      await _refreshFeed(SourceId.tieba);
     });
   }
 
@@ -448,11 +448,12 @@ class _AccountScreenState extends State<AccountScreen> {
           _zhihuStatus = const TiebaSessionStatus(TiebaSessionState.signedOut);
         });
       }
-      await _refreshFeed();
+      await _refreshFeed(SourceId.zhihu);
     });
   }
 
-  Future<void> _refreshFeed() async {
+  Future<void> _refreshFeed(SourceId source) async {
+    await widget.controller.accountChanged(source);
     try {
       await widget.controller.refresh();
     } catch (_) {
@@ -492,7 +493,7 @@ class _AccountScreenState extends State<AccountScreen> {
       title: '小红书',
       connected: _xhsLoggedIn,
       status: _xhsLoggedIn
-          ? '已登录，Cookie 由系统 WebView 持久化'
+          ? '已保存网页会话；打开个人主页可验证账号'
           : _xhsStatusError == null
           ? '未检测到登录状态'
           : '暂时无法检查登录状态',

@@ -12,7 +12,7 @@ import 'models.dart';
 import 'reading_state_store.dart';
 
 const String _transferFormat = 'mixsocial-device-transfer';
-const int _transferVersion = 1;
+const int _transferVersion = 3;
 const int _maxPlainBytes = 8 * 1024 * 1024;
 const int _maxWireBytes = _maxPlainBytes + 29;
 
@@ -32,12 +32,19 @@ class DeviceTransferPayload {
     required this.recentForums,
     required this.searchHistory,
     required this.readingStates,
+    this.includePreferences = true,
+    this.blockedAuthors = const <Author>[],
+    this.sourceWeights = const {},
+    this.unreadFirst = false,
     this.tiebaCredential,
     this.zhihuCredential,
     this.xhsCookies = const <Map<String, String>>[],
   }) : library = LibraryBackup.decode(libraryJson),
        history = LibraryBackup.decode(historyJson);
 
+  final bool includePreferences;
+  final Map<SourceId, int> sourceWeights;
+  final bool unreadFirst;
   final DateTime createdAt;
   final String libraryJson;
   final String historyJson;
@@ -47,6 +54,7 @@ class DeviceTransferPayload {
   final AppThemePreference theme;
   final FeedDensity density;
   final Set<String> blockedForums;
+  final List<Author> blockedAuthors;
   final Set<String> blockedKeywords;
   final bool hideVideos;
   final bool hideMedia;
@@ -70,6 +78,7 @@ class DeviceTransferPayload {
     final value = jsonEncode(<String, Object?>{
       'format': _transferFormat,
       'version': _transferVersion,
+      'includePreferences': includePreferences,
       'createdAt': createdAt.toUtc().toIso8601String(),
       'library': jsonDecode(libraryJson),
       'history': jsonDecode(historyJson),
@@ -77,9 +86,21 @@ class DeviceTransferPayload {
         'layouts': <String, String>{
           for (final entry in layouts.entries) entry.key.id: entry.value.name,
         },
+        'sourceWeights': {
+          for (final entry in sourceWeights.entries) entry.key.id: entry.value,
+        },
+        'unreadFirst': unreadFirst,
         'theme': theme.name,
         'density': density.name,
         'blockedForums': blockedForums.toList()..sort(),
+        'blockedAuthors': [
+          for (final author in blockedAuthors)
+            {
+              'source': author.ref.source.id,
+              'id': author.ref.id,
+              'name': author.name,
+            },
+        ],
         'blockedKeywords': blockedKeywords.toList()..sort(),
         'hideVideos': hideVideos,
         'hideMedia': hideMedia,
@@ -111,9 +132,10 @@ class DeviceTransferPayload {
       throw const FormatException('迁移数据超过 8 MiB');
     }
     final root = _object(jsonDecode(text), '迁移数据结构无效');
-    _exactKeys(root, const <String>{
+    _exactKeys(root, <String>{
       'format',
       'version',
+      if (root['version'] != 1) 'includePreferences',
       'createdAt',
       'library',
       'history',
@@ -121,8 +143,11 @@ class DeviceTransferPayload {
       'credentials',
     });
     if (root['format'] != _transferFormat ||
-        root['version'] != _transferVersion) {
+        !const [1, 2, 3].contains(root['version'])) {
       throw const FormatException('不支持的迁移数据版本');
+    }
+    if (root['version'] != 1 && root['includePreferences'] is! bool) {
+      throw const FormatException('迁移范围无效');
     }
     final createdAt = DateTime.tryParse(root['createdAt']?.toString() ?? '');
     if (createdAt == null) throw const FormatException('迁移时间无效');
@@ -135,8 +160,10 @@ class DeviceTransferPayload {
     }
 
     final preferences = _object(root['preferences'], '偏好设置无效');
-    _exactKeys(preferences, const <String>{
+    _exactKeys(preferences, <String>{
       'layouts',
+      if (root['version'] != 1) ...['sourceWeights', 'unreadFirst'],
+      if (root['version'] == 3) 'blockedAuthors',
       'theme',
       'density',
       'blockedForums',
@@ -148,6 +175,27 @@ class DeviceTransferPayload {
       'searchHistory',
       'readingStates',
     });
+    final weights = <SourceId, int>{};
+    if (root['version'] != 1) {
+      if (preferences['unreadFirst'] is! bool) {
+        throw const FormatException('未读偏好无效');
+      }
+      for (final entry in _object(
+        preferences['sourceWeights'],
+        '来源权重无效',
+      ).entries) {
+        final source = SourceId.values
+            .where((id) => id.id == entry.key && id != SourceId.all)
+            .firstOrNull;
+        if (source == null ||
+            entry.value is! int ||
+            (entry.value as int) < 1 ||
+            (entry.value as int) > 3) {
+          throw const FormatException('来源权重无效');
+        }
+        weights[source] = entry.value as int;
+      }
+    }
     final rawLayouts = _object(preferences['layouts'], '布局设置无效');
     final layouts = <SourceId, FeedLayout>{};
     for (final entry in rawLayouts.entries) {
@@ -175,6 +223,34 @@ class DeviceTransferPayload {
       throw const FormatException('外观或内容设置无效');
     }
     final blockedForums = _strings(preferences['blockedForums'], 500, 80);
+    final blockedAuthors = <Author>[];
+    if (root['version'] == 3) {
+      final rawAuthors = preferences['blockedAuthors'];
+      if (rawAuthors is! List || rawAuthors.length > 2000) {
+        throw const FormatException('屏蔽作者列表无效或过长');
+      }
+      final seenAuthors = <String>{};
+      for (final value in rawAuthors) {
+        final author = _object(value, '屏蔽作者无效');
+        _exactKeys(author, {'source', 'id', 'name'});
+        final source = SourceId.parse(author['source']);
+        final id = author['id'];
+        final name = author['name'];
+        if (source == SourceId.all ||
+            id is! String ||
+            id.trim().isEmpty ||
+            id.length > 240 ||
+            name is! String ||
+            name.length > 500) {
+          throw const FormatException('屏蔽作者编号或名称无效');
+        }
+        final ref = ProfileRef(source: source, id: id.trim());
+        if (!ref.isIdentifiable) throw const FormatException('屏蔽作者编号无效');
+        if (seenAuthors.add(ref.key)) {
+          blockedAuthors.add(Author(ref: ref, id: id, name: name));
+        }
+      }
+    }
     final blockedKeywords = _strings(preferences['blockedKeywords'], 500, 100);
     final followingProfiles = _strings(
       preferences['followingProfiles'],
@@ -232,6 +308,9 @@ class DeviceTransferPayload {
     }
 
     return DeviceTransferPayload(
+      includePreferences: root['includePreferences'] != false,
+      sourceWeights: weights,
+      unreadFirst: preferences['unreadFirst'] == true,
       createdAt: createdAt,
       libraryJson: libraryJson,
       historyJson: historyJson,
@@ -239,6 +318,7 @@ class DeviceTransferPayload {
       theme: theme,
       density: density,
       blockedForums: blockedForums,
+      blockedAuthors: blockedAuthors,
       blockedKeywords: blockedKeywords,
       hideVideos: preferences['hideVideos']! as bool,
       hideMedia: preferences['hideMedia']! as bool,
@@ -510,7 +590,10 @@ Future<_EncryptedTransfer> _encryptPayload(String value) async {
 }
 
 Future<String> _decryptPayload(Uint8List wire, Uint8List key) async {
-  if (wire.length < 30 || wire.first != _transferVersion || key.length != 32) {
+  // The authenticated envelope is unchanged; older payloads remain readable.
+  if (wire.length < 30 ||
+      !const [1, 2, 3].contains(wire.first) ||
+      key.length != 32) {
     throw const FormatException('迁移密文格式无效');
   }
   try {

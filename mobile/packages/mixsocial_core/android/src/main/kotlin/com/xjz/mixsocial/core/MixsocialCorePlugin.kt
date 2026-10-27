@@ -91,6 +91,38 @@ class MixsocialCorePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                             arguments["requestId"]?.toString() ?: "",
                         )
                     }
+                    "tieba.follow" -> {
+                        val arguments = arguments(call)
+                        requireTieba().followWithRequest(
+                            arguments["requestId"]?.toString() ?: "",
+                            arguments["ref"]?.toString() ?: "{}",
+                            arguments["value"] as? Boolean ?: throw IllegalArgumentException("value is required"),
+                        )
+                        null
+                    }
+                    "tieba.following" -> {
+                        val arguments = arguments(call)
+                        requireTieba().followingWithRequest(
+                            arguments["requestId"]?.toString() ?: "",
+                            arguments["ref"]?.toString() ?: "{}",
+                        )
+                    }
+                    "tieba.followForum" -> {
+                        val arguments = arguments(call)
+                        requireTieba().followForumWithRequest(
+                            arguments["requestId"]?.toString() ?: "",
+                            arguments["forum"]?.toString() ?: "",
+                            arguments["value"] as? Boolean ?: throw IllegalArgumentException("value is required"),
+                        )
+                        null
+                    }
+                    "tieba.forumFollowing" -> {
+                        val arguments = arguments(call)
+                        requireTieba().forumFollowingWithRequest(
+                            arguments["requestId"]?.toString() ?: "",
+                            arguments["forum"]?.toString() ?: "",
+                        )
+                    }
                     "tieba.detail" -> {
                         val arguments = arguments(call)
                         requireTieba().detailWithRequest(
@@ -152,6 +184,22 @@ class MixsocialCorePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                             arguments["cursor"]?.toString() ?: "",
                         )
                     }
+                    "zhihu.follow" -> {
+                        val arguments = arguments(call)
+                        requireZhihu().followWithRequest(
+                            arguments["requestId"]?.toString() ?: "",
+                            arguments["ref"]?.toString() ?: "{}",
+                            arguments["value"] as? Boolean ?: throw IllegalArgumentException("value is required"),
+                        )
+                        null
+                    }
+                    "zhihu.following" -> {
+                        val arguments = arguments(call)
+                        requireZhihu().followingWithRequest(
+                            arguments["requestId"]?.toString() ?: "",
+                            arguments["ref"]?.toString() ?: "{}",
+                        )
+                    }
                     "zhihu.search" -> {
                         val arguments = arguments(call)
                         requireZhihu().searchWithRequest(
@@ -170,6 +218,14 @@ class MixsocialCorePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     "zhihu.comments" -> {
                         val arguments = arguments(call)
                         requireZhihu().commentsWithRequest(
+                            arguments["requestId"]?.toString() ?: "",
+                            arguments["ref"]?.toString() ?: "{}",
+                            arguments["cursor"]?.toString() ?: "",
+                        )
+                    }
+                    "zhihu.answers" -> {
+                        val arguments = arguments(call)
+                        requireZhihu().answersWithRequest(
                             arguments["requestId"]?.toString() ?: "",
                             arguments["ref"]?.toString() ?: "{}",
                             arguments["cursor"]?.toString() ?: "",
@@ -331,6 +387,12 @@ class MixsocialCorePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
             error("Android 无法解码该图片")
         }
+
+        // Do not JPEG-encode an already suitable JPEG/PNG/WebP a second time.
+        // This matters for small text and line art in feed covers.
+        if (maxOf(bounds.outWidth, bounds.outHeight) <= maxDimension &&
+            bounds.outMimeType in setOf("image/jpeg", "image/png", "image/webp", "image/gif")
+        ) return source
 
         var sampleSize = 1
         while (bounds.outWidth / sampleSize > maxDimension * 2 ||

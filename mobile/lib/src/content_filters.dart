@@ -10,6 +10,7 @@ String normalizeKeyword(String value) => value.trim().toLowerCase();
 
 class ContentFilters {
   const ContentFilters({
+    this.blockedProfiles = const <String>{},
     this.blockedForums = const <String>{},
     this.blockedKeywords = const <String>{},
     this.hideVideos = false,
@@ -17,11 +18,13 @@ class ContentFilters {
   });
 
   final Set<String> blockedForums;
+  final Set<String> blockedProfiles;
   final Set<String> blockedKeywords;
   final bool hideVideos;
   final bool hideMedia;
 
   bool blocks(FeedItem item) {
+    if (blocksAuthor(item.author)) return true;
     if (item.ref.source == SourceId.tieba &&
         blockedForums.contains(normalizeForumName(item.forumName))) {
       return true;
@@ -32,6 +35,9 @@ class ContentFilters {
     }
     return blocksText('${item.title}\n${item.summary}');
   }
+
+  bool blocksAuthor(Author author) =>
+      author.ref.isIdentifiable && blockedProfiles.contains(author.ref.key);
 
   bool blocksText(String value) {
     if (blockedKeywords.isEmpty) return false;
@@ -51,11 +57,13 @@ class ContentFilters {
       .toList();
 
   ContentFilters copyWith({
+    Set<String>? blockedProfiles,
     Set<String>? blockedForums,
     Set<String>? blockedKeywords,
     bool? hideVideos,
     bool? hideMedia,
   }) => ContentFilters(
+    blockedProfiles: blockedProfiles ?? this.blockedProfiles,
     blockedForums: blockedForums ?? this.blockedForums,
     blockedKeywords: blockedKeywords ?? this.blockedKeywords,
     hideVideos: hideVideos ?? this.hideVideos,

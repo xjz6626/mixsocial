@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'content_filters.dart';
+import 'content_identity_migration.dart';
 import 'design_system.dart';
 import 'local_database.dart';
 import 'library_recovery.dart';
@@ -28,8 +29,30 @@ class LocalSettings {
   );
   Future<void> _readLaterWrites = Future<void>.value();
   Future<void>? _relationshipWrites;
+  Future<void>? _filterWrites;
 
   bool get databaseEnabled => _database != null;
+
+  Future<void> clearAccountState(SourceId source) async {
+    await (_relationshipWrites ?? Future<void>.value());
+    final following = await followingProfiles();
+    following.removeWhere((key) => key.startsWith('${source.id}:'));
+    await _preferences.setStringList(
+      'relationships.following',
+      following.toList(),
+    );
+    final confirmed = await confirmedFollowing();
+    confirmed.removeWhere((key, _) => key.startsWith('${source.id}:'));
+    await _preferences.setString(
+      'relationships.confirmed',
+      jsonEncode(confirmed),
+    );
+    await _database?.clearAccountFeeds(source);
+    for (final channel in FeedChannel.values) {
+      await _preferences.remove(_cacheKey(source, channel));
+      await _preferences.remove(_cacheKey(SourceId.all, channel));
+    }
+  }
 
   static Future<LocalSettings> create({
     SharedPreferencesAsync? preferences,
@@ -52,6 +75,12 @@ class LocalSettings {
       await settings._historyRecovery.reconcile(selectedDatabase);
       await settings._savedRecovery.reconcile(selectedDatabase);
     }
+    await migrateContentPreferences(selectedPreferences, [
+      ...await settings.historyItems(),
+      ...await settings.savedItems(),
+      ...await settings.readLaterItems(),
+      if (selectedDatabase != null) ...await selectedDatabase.organizedItems(),
+    ]);
     return settings;
   }
 
@@ -66,6 +95,18 @@ class LocalSettings {
 
   Future<void> setLayout(SourceId source, FeedLayout layout) =>
       _preferences.setString('layout.${source.id}', layout.name);
+
+  Future<Map<SourceId, int>> sourceWeights() async => {
+    for (final source in [SourceId.xhs, SourceId.tieba, SourceId.zhihu])
+      source: (await _preferences.getInt('reader.weight.${source.id}') ?? 1)
+          .clamp(1, 3),
+  };
+  Future<void> setSourceWeight(SourceId source, int value) =>
+      _preferences.setInt('reader.weight.${source.id}', value.clamp(1, 3));
+  Future<bool> unreadFirst() async =>
+      await _preferences.getBool('reader.unreadFirst') ?? false;
+  Future<void> setUnreadFirst(bool value) =>
+      _preferences.setBool('reader.unreadFirst', value);
 
   Future<double> scrollOffsetFor(SourceId source) async {
     final saved = await _preferences.getDouble('scroll.${source.id}');
@@ -84,6 +125,39 @@ class LocalSettings {
           .map(normalizeForumName)
           .where((String value) => value.isNotEmpty)
           .toSet();
+
+  Future<List<Author>> blockedAuthors() async {
+    final encoded = await _preferences.getString('filters.authors');
+    if (encoded == null) return <Author>[];
+    try {
+      return listOfMaps(jsonDecode(encoded))
+          .map((value) => Author.fromJson(value, SourceId.all))
+          .where((author) => author.ref.isIdentifiable)
+          .toList();
+    } catch (_) {
+      return <Author>[];
+    }
+  }
+
+  Future<void> _writeFilter(Future<void> Function() action) {
+    final write = (_filterWrites ?? Future<void>.value()).then((_) => action());
+    _filterWrites = write.then<void>((_) {}, onError: (Object _) {});
+    return write;
+  }
+
+  Future<void> setAuthorBlocked(Author author, bool value) =>
+      _writeFilter(() async {
+        if (!author.ref.isIdentifiable) {
+          throw ArgumentError('无法屏蔽缺少用户编号的作者');
+        }
+        final authors = await blockedAuthors();
+        authors.removeWhere((existing) => existing.ref.key == author.ref.key);
+        if (value) authors.add(author);
+        await _preferences.setString(
+          'filters.authors',
+          jsonEncode(authors.map((author) => author.toJson()).toList()),
+        );
+      });
 
   Future<Set<String>> blockedKeywords() async =>
       (await _preferences.getStringList('filters.keywords') ?? const <String>[])
@@ -113,29 +187,54 @@ class LocalSettings {
     );
   }
 
-  Future<Set<String>> followingProfiles() async =>
-      (await _preferences.getStringList('relationships.following') ??
-              const <String>[])
-          .toSet();
-
-  Future<void> setForumBlocked(String forum, bool value) async {
-    final forums = await blockedForums();
-    final normalized = normalizeForumName(forum);
-    if (normalized.isEmpty) return;
-    value ? forums.add(normalized) : forums.remove(normalized);
-    await _preferences.setStringList('filters.forums', forums.toList()..sort());
+  Future<Set<String>> followingProfiles() async {
+    final profiles =
+        (await _preferences.getStringList('relationships.following') ??
+                const <String>[])
+            .toSet();
+    for (final entry in (await confirmedFollowing()).entries) {
+      entry.value ? profiles.add(entry.key) : profiles.remove(entry.key);
+    }
+    return profiles;
   }
 
-  Future<void> setKeywordBlocked(String keyword, bool value) async {
-    final keywords = await blockedKeywords();
-    final normalized = normalizeKeyword(keyword);
-    if (normalized.isEmpty) return;
-    value ? keywords.add(normalized) : keywords.remove(normalized);
-    await _preferences.setStringList(
-      'filters.keywords',
-      keywords.toList()..sort(),
-    );
+  Future<Map<String, bool>> confirmedFollowing() async {
+    final encoded = await _preferences.getString('relationships.confirmed');
+    if (encoded == null) return <String, bool>{};
+    try {
+      final values = mapOf(jsonDecode(encoded));
+      return {
+        for (final entry in values.entries)
+          if (entry.value is bool) entry.key: entry.value! as bool,
+      };
+    } catch (_) {
+      return <String, bool>{};
+    }
   }
+
+  Future<void> setForumBlocked(String forum, bool value) =>
+      _writeFilter(() async {
+        final forums = await blockedForums();
+        final normalized = normalizeForumName(forum);
+        if (normalized.isEmpty) return;
+        value ? forums.add(normalized) : forums.remove(normalized);
+        await _preferences.setStringList(
+          'filters.forums',
+          forums.toList()..sort(),
+        );
+      });
+
+  Future<void> setKeywordBlocked(String keyword, bool value) =>
+      _writeFilter(() async {
+        final keywords = await blockedKeywords();
+        final normalized = normalizeKeyword(keyword);
+        if (normalized.isEmpty) return;
+        value ? keywords.add(normalized) : keywords.remove(normalized);
+        await _preferences.setStringList(
+          'filters.keywords',
+          keywords.toList()..sort(),
+        );
+      });
 
   Future<void> setHideVideos(bool value) =>
       _preferences.setBool('filters.hideVideos', value);
@@ -153,6 +252,12 @@ class LocalSettings {
     final write = (_relationshipWrites ?? Future<void>.value()).then((_) async {
       final profiles = await followingProfiles();
       value ? profiles.add(profile.key) : profiles.remove(profile.key);
+      final confirmed = await confirmedFollowing();
+      confirmed[profile.key] = value;
+      await _preferences.setString(
+        'relationships.confirmed',
+        jsonEncode(confirmed),
+      );
       await _preferences.setStringList(
         'relationships.following',
         profiles.toList()..sort(),
@@ -241,6 +346,11 @@ class LocalSettings {
         return;
       }
       final values = state.items;
+      if (value &&
+          values.where((existing) => existing.key != item.key).length >=
+              LocalDatabase.readLaterLimit) {
+        throw const FormatException('稍后阅读已满（300 条），请先整理；已有内容不会被移除');
+      }
       final changes = !state.sqliteAuthoritative
           ? state.changes
           : <String, _ReadLaterChange>{};
@@ -263,14 +373,11 @@ class LocalSettings {
       recordChange(item, value);
       values.removeWhere((FeedItem existing) => existing.key == item.key);
       if (value) values.insert(0, item);
-      for (final evicted in values.skip(LocalDatabase.readLaterLimit)) {
-        recordChange(evicted, false);
-      }
       // Queue, pending changes, and authority are one atomic preference write.
       // A failed write cannot leave a visible queue with a stale recovery flag.
       await _writeReadLaterState(
         _ReadLaterState(
-          items: values.take(LocalDatabase.readLaterLimit).toList(),
+          items: values,
           changes: changes,
           sqliteAuthoritative: false,
         ),

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
+import 'package:mixsocial_core/mixsocial_core.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import 'app_controller.dart';
@@ -15,6 +16,7 @@ import 'feed_widgets.dart';
 import 'forum_screen.dart';
 import 'media_preview_screen.dart';
 import 'models.dart';
+import 'relationship_actions.dart';
 import 'media_tools.dart';
 import 'network_media.dart';
 import 'profile_screen.dart';
@@ -22,6 +24,9 @@ import 'reading_preferences.dart';
 import 'reading_state_store.dart';
 import 'social_text.dart';
 import 'source_diagnostics.dart';
+import 'structured_body.dart';
+import 'offline_store.dart';
+import 'offline_screen.dart';
 
 export 'media_preview_screen.dart';
 
@@ -47,12 +52,14 @@ class DetailScreen extends StatefulWidget {
 
 class _DetailScreenState extends State<DetailScreen> {
   late FeedItem _item = widget.initialItem.copyWith(
-    favorited:
-        widget.initialItem.favorited ||
-        (widget.initialItem.ref.source != SourceId.xhs &&
-            widget.controller.isSaved(widget.initialItem)),
+    localSaved: widget.controller.isSaved(widget.initialItem),
   );
   FeedDetail? _detail;
+  List<FeedItem> _answers = [];
+  String _answersCursor = '';
+  bool _answersMore = false;
+  bool _answersLoading = false;
+  Object? _answersError;
   final ScrollController _scrollController = ScrollController();
   late final ReadingStateStore _readingStore =
       widget.readingStore ?? ReadingStateStore();
@@ -89,8 +96,219 @@ class _DetailScreenState extends State<DetailScreen> {
     fallback: _item.author.following,
   );
 
+  ReadingState? _previousReading;
+  final Map<String, List<FeedComment>> _inlineReplies = {};
+  final Set<String> _expandedReplies = {};
+  final Set<String> _loadingReplies = {};
+  final Set<String> _longReplies = {};
+  bool _offlineCancelled = false;
+  bool _offlineSaving = false;
+
+  Future<void> _downloadOffline() async {
+    final detail = _detail;
+    if (detail == null || _offlineSaving) return;
+    final seen = <String>{};
+    final images = [
+      ...detail.item.media.where((media) => media.kind == 'image'),
+      ...parseReadingBlocks(
+        detail.contentHtml,
+      ).where((block) => block.media != null).map((block) => block.media!),
+    ].where((media) => seen.add(media.fullImageUrl)).toList();
+    final selected = <int>{};
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) => AlertDialog(
+          title: const Text('下载离线正文与图片'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                const Text('正文始终保存，可额外选择最多 6 张图片。评论、视频不下载；已有副本仅在全部下载成功后替换。'),
+                for (var index = 0; index < images.length; index++)
+                  CheckboxListTile(
+                    title: Text('图片 ${index + 1}'),
+                    subtitle: Text(
+                      '${images[index].width} × ${images[index].height}',
+                    ),
+                    value: selected.contains(index),
+                    onChanged: (value) => update(() {
+                      if (value! && selected.length < 6) {
+                        selected.add(index);
+                      } else {
+                        selected.remove(index);
+                      }
+                    }),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('下载'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (proceed != true || !mounted) return;
+    setState(() {
+      _offlineSaving = true;
+      _offlineCancelled = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: const Duration(minutes: 5),
+        content: Text('正在下载正文和 ${selected.length} 张图片…'),
+        action: SnackBarAction(
+          label: '取消',
+          onPressed: () => _offlineCancelled = true,
+        ),
+      ),
+    );
+    try {
+      final downloaded = <String, Uint8List>{};
+      for (final index in selected) {
+        if (!mounted || _offlineCancelled) return;
+        final media = images[index];
+        Uint8List? bytes;
+        for (final url
+            in mediaImageCandidates(
+                  media,
+                  detail.item.ref.source,
+                  MediaImageQuality.detail,
+                )
+                .where(
+                  (url) => isSupportedDownloadUrl(url, detail.item.ref.source),
+                )
+                .take(3)) {
+          try {
+            bytes = await MixsocialCore.fetchImage(
+              url,
+              headers: mediaRequestHeaders(detail.item.ref.source),
+              maxDimension: 2560,
+            );
+            break;
+          } catch (_) {
+            continue;
+          }
+        }
+        if (bytes == null) {
+          throw const FormatException('有图片下载失败，原有离线副本保留，请稍后重试');
+        }
+        downloaded[media.fullImageUrl] = bytes;
+      }
+      if (!mounted || _offlineCancelled) return;
+      await OfflineStore().save(detail, downloaded);
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: const Text('已保存离线副本'),
+              action: SnackBarAction(
+                label: '打开',
+                onPressed: () => Navigator.push<void>(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        OfflineLibraryScreen(controller: widget.controller),
+                  ),
+                ),
+              ),
+            ),
+          );
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        _showMessage(safeLocalMessage(error), error: true);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _offlineSaving = false);
+        if (_offlineCancelled) {
+          ScaffoldMessenger.of(context).hideCurrentSnackBar();
+          _showMessage('已取消下载，原有副本保留');
+        }
+      }
+    }
+  }
+
+  Future<void> _toggleInlineReplies(FeedComment comment) async {
+    final id = comment.ref.id;
+    if (_loadingReplies.contains(id)) return;
+    if (_expandedReplies.remove(id)) {
+      setState(() {});
+      return;
+    }
+    if (_inlineReplies.containsKey(id)) {
+      setState(() => _expandedReplies.add(id));
+      return;
+    }
+    final generation = _requestGeneration;
+    setState(() => _loadingReplies.add(id));
+    try {
+      final page = await widget.controller.floorReplies(comment.ref);
+      if (!mounted || generation != _requestGeneration) return;
+      if (page.hasMore || page.comments.length > 5) {
+        _longReplies.add(id);
+        _openFloorReplies(comment);
+        return;
+      }
+      setState(() {
+        _inlineReplies[id] = widget.controller.prepareComments(page.comments);
+        _expandedReplies.add(id);
+      });
+    } catch (error) {
+      if (mounted) {
+        _showMessage(
+          '楼中楼加载失败，可再次点按重试：${safeSourceMessage(error)}',
+          error: true,
+        );
+      }
+    } finally {
+      _loadingReplies.remove(id);
+      if (mounted) setState(() {});
+    }
+  }
+
+  Future<void> _continueThread() async {
+    final previous = _previousReading;
+    if (previous == null) return;
+    var next = _comments
+        .where((comment) => comment.floor > previous.floor)
+        .firstOrNull;
+    if (next == null && _hasMore) {
+      await _loadMore();
+      next = _comments
+          .where((comment) => comment.floor > previous.floor)
+          .firstOrNull;
+    }
+    if (!mounted) return;
+    if (next == null) {
+      _showMessage('当前页未找到更高楼层，可继续加载或跳转页码');
+      return;
+    }
+    await _restorePosition(
+      ReadingState(
+        anchorId: next.ref.id,
+        floor: next.floor,
+        updatedAt: DateTime.now(),
+      ),
+    );
+  }
+
   bool get _canLike =>
-      widget.controller.supports(_item.ref.source, SourceCapability.like);
+      widget.controller.supports(_item.ref.source, SourceCapability.like) &&
+      !(_item.ref.source == SourceId.zhihu &&
+          _item.ref.contentKind == 'question');
   bool get _canFavorite => true;
   bool get _canComment =>
       _item.ref.source == SourceId.tieba ||
@@ -103,6 +321,7 @@ class _DetailScreenState extends State<DetailScreen> {
     SourceCapability.commentLike,
   );
   bool get _canFollow =>
+      hasAuthorIdentity(_item.author) &&
       widget.controller.supports(_item.ref.source, SourceCapability.follow);
 
   @override
@@ -134,7 +353,7 @@ class _DetailScreenState extends State<DetailScreen> {
       _item.author.ref,
       fallback: _item.author.following,
     );
-    if (mounted && value != _following) {
+    if (mounted) {
       setState(() => _following = value);
     }
   }
@@ -153,6 +372,7 @@ class _DetailScreenState extends State<DetailScreen> {
     ReadingState? previous;
     try {
       previous = await _readingStore.get(_item.key);
+      _previousReading = previous;
       final preferences = await _preferencesStore.read();
       if (!mounted) return;
       setState(() {
@@ -274,6 +494,7 @@ class _DetailScreenState extends State<DetailScreen> {
       offset: offset - anchorOffset,
       anchorId: anchor?.ref.id ?? '',
       floor: anchor?.floor ?? 0,
+      replyCount: _item.stats.comments,
       reverse: _reverse,
       onlyOriginalPoster: _onlyOriginalPoster,
       completed: _completed,
@@ -464,7 +685,15 @@ class _DetailScreenState extends State<DetailScreen> {
       );
       if (!mounted || generation != _requestGeneration) return;
       setState(() {
+        _inlineReplies.clear();
+        _expandedReplies.clear();
+        _longReplies.clear();
         _detail = detail;
+        _answers = detail.answers;
+        _answersCursor = detail.answersNextCursor;
+        _answersMore = detail.answersHasMore;
+        _answersLoading = false;
+        _answersError = null;
         _item = _resolvedItem(detail.item);
         _comments = widget.controller.prepareComments(detail.comments);
         _currentPage = detail.currentPage > 1
@@ -476,13 +705,21 @@ class _DetailScreenState extends State<DetailScreen> {
           _commentPages[comment.ref.id] = _currentPage;
         }
         _reconcileCommentLikes(_comments, _commentLikeUpdates, likeSnapshot);
-        _hasMore = detail.hasMore && detail.nextCursor.isNotEmpty;
-        _nextCursor = detail.nextCursor;
+        _hasMore =
+            detail.commentsPending ||
+            (detail.hasMore && detail.nextCursor.isNotEmpty);
+        _nextCursor = detail.commentsPending
+            ? 'initial-comments'
+            : detail.nextCursor;
+        if (detail.commentsError.isNotEmpty) {
+          _paginationError = StateError(detail.commentsError);
+        }
         _following = widget.controller.isFollowing(
           _item.author.ref,
           fallback: _item.author.following,
         );
       });
+      unawaited(_refreshFollowing());
     } catch (error) {
       if (mounted && generation == _requestGeneration) {
         setState(() => _error = error);
@@ -490,6 +727,9 @@ class _DetailScreenState extends State<DetailScreen> {
     } finally {
       if (mounted && generation == _requestGeneration) {
         setState(() => _loading = false);
+        if (_detail?.commentsPending == true && _error == null) {
+          unawaited(_loadMore());
+        }
       }
     }
   }
@@ -536,11 +776,13 @@ class _DetailScreenState extends State<DetailScreen> {
                     item.ref.id.isEmpty || seen.add(item.ref.id),
               ),
         ];
-        _hasMore =
-            page.hasMore &&
-            page.nextCursor.isNotEmpty &&
-            page.nextCursor != cursor;
-        _nextCursor = page.nextCursor;
+        _hasMore = page.hasMore;
+        if (page.hasMore &&
+            (page.nextCursor.isEmpty || page.nextCursor == cursor)) {
+          _paginationError = StateError('回复分页暂未前进，请重试');
+        } else {
+          _nextCursor = page.nextCursor;
+        }
       });
     } catch (error) {
       if (mounted && generation == _requestGeneration) {
@@ -565,6 +807,52 @@ class _DetailScreenState extends State<DetailScreen> {
       }
     } finally {
       if (mounted) setState(() => _readLaterWorking = false);
+    }
+  }
+
+  void _openAnswer(FeedItem item) {
+    Navigator.push<void>(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            DetailScreen(controller: widget.controller, initialItem: item),
+      ),
+    );
+  }
+
+  Future<void> _loadAnswers() async {
+    if (_answersLoading || !_answersMore) return;
+    final generation = _requestGeneration;
+    final cursor = _answersCursor;
+    setState(() {
+      _answersLoading = true;
+      _answersError = null;
+    });
+    try {
+      final page = await widget.controller.zhihu.answers(
+        _item.ref,
+        cursor: cursor,
+      );
+      if (!mounted || generation != _requestGeneration) return;
+      final seen = _answers.map((item) => item.key).toSet();
+      setState(() {
+        _answers.addAll(page.items.where((item) => seen.add(item.key)));
+        _answersMore = page.hasMore;
+        if (page.hasMore &&
+            (page.nextCursor.isEmpty || page.nextCursor == cursor)) {
+          _answersError = StateError('回答分页暂未前进，请重试');
+        } else {
+          _answersCursor = page.nextCursor;
+        }
+      });
+    } catch (error) {
+      if (mounted && generation == _requestGeneration) {
+        setState(() => _answersError = error);
+      }
+    } finally {
+      if (mounted && generation == _requestGeneration) {
+        setState(() => _answersLoading = false);
+      }
     }
   }
 
@@ -608,12 +896,7 @@ class _DetailScreenState extends State<DetailScreen> {
     if (widget.controller.hideMedia && value.media.isNotEmpty) {
       value = value.copyWith(media: const <MediaItem>[]);
     }
-    return value.copyWith(
-      favorited:
-          value.favorited ||
-          (value.ref.source != SourceId.xhs &&
-              widget.controller.isSaved(value)),
-    );
+    return value.copyWith(localSaved: widget.controller.isSaved(value));
   }
 
   Future<void> _setThreadView({bool? reverse, bool? onlyOriginalPoster}) async {
@@ -648,28 +931,45 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Future<void> _favorite() async {
-    final value = !_item.favorited;
+    final platform = _item.ref.source == SourceId.xhs;
+    final value = !(platform
+        ? _item.favorited
+        : widget.controller.isSaved(_item));
     await _runAction(
       () async {
         final warning = await widget.controller.favorite(_item, value);
         if (!mounted) return;
         setState(() {
           _item = _item.copyWith(
-            favorited: value,
+            favorited: platform ? value : _item.favorited,
+            localSaved: widget.controller.isSaved(_item),
             stats: _item.stats.copyWith(
-              favorites: _changedCount(
-                _item.stats.favorites,
-                _item.favorited,
-                value,
-              ),
+              favorites: platform
+                  ? _changedCount(_item.stats.favorites, _item.favorited, value)
+                  : _item.stats.favorites,
             ),
           );
         });
-        _showMessage(warning ?? (value ? '已收藏' : '已取消收藏'));
+        _showMessage(
+          warning ??
+              (platform
+                  ? (value ? '已收藏到小红书' : '已取消小红书收藏')
+                  : (value ? '已保存到本机' : '已移出本地收藏')),
+        );
       },
       success: '',
       showSuccess: false,
     );
+  }
+
+  Future<void> _refreshFollowing() async {
+    final profile = _item.author.ref;
+    if (profile.source == SourceId.xhs || !profile.isIdentifiable) return;
+    try {
+      await widget.controller.readFollowing(profile);
+    } catch (error) {
+      sourceDiagnostics.record(profile.source, '关注状态', error);
+    }
   }
 
   Future<void> _follow() async {
@@ -684,6 +984,18 @@ class _DetailScreenState extends State<DetailScreen> {
       success: '',
       showSuccess: false,
     );
+  }
+
+  Future<void> _blockAuthor() async {
+    final changed = await toggleAuthorBlock(
+      context,
+      widget.controller,
+      _item.author,
+    );
+    if (!mounted || !changed) return;
+    if (widget.controller.isAuthorBlocked(_item.author.ref)) {
+      Navigator.pop(context);
+    }
   }
 
   Future<void> _blockForum() async {
@@ -879,7 +1191,14 @@ class _DetailScreenState extends State<DetailScreen> {
       await action();
       if (mounted && showSuccess) _showMessage(success);
     } catch (error) {
-      if (mounted) _showMessage(safeSourceMessage(error), error: true);
+      if (mounted) {
+        _showMessage(
+          error is FormatException
+              ? safeLocalMessage(error)
+              : safeSourceMessage(error),
+          error: true,
+        );
+      }
     } finally {
       if (mounted) setState(() => _working = false);
     }
@@ -904,9 +1223,19 @@ class _DetailScreenState extends State<DetailScreen> {
   @override
   Widget build(BuildContext context) {
     final detail = _detail;
-    final comments = _comments
-        .map((comment) => _withCommentLikeUpdates(comment, _commentLikeUpdates))
-        .toList();
+    final comments = widget.controller.prepareComments(
+      _comments
+          .map(
+            (comment) => _expandedReplies.contains(comment.ref.id)
+                ? comment.copyWith(replies: _inlineReplies[comment.ref.id])
+                : comment,
+          )
+          .map(
+            (comment) => _withCommentLikeUpdates(comment, _commentLikeUpdates),
+          )
+          .toList(),
+    );
+    final answers = widget.controller.prepareItems(_answers);
     final tiebaThread = _item.ref.source == SourceId.tieba;
     return Scaffold(
       appBar: AppBar(
@@ -917,6 +1246,32 @@ class _DetailScreenState extends State<DetailScreen> {
             enabled: !_working,
             onSelected: (String action) {
               switch (action) {
+                case 'offline':
+                  unawaited(_downloadOffline());
+                  break;
+                case 'offlineLibrary':
+                  Navigator.push<void>(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          OfflineLibraryScreen(controller: widget.controller),
+                    ),
+                  );
+                  break;
+                case 'continueThread':
+                  unawaited(_continueThread());
+                  break;
+                case 'localSave':
+                  unawaited(
+                    _runAction(() async {
+                      await widget.controller.setLocalSaved(
+                        _item,
+                        !widget.controller.isSaved(_item),
+                      );
+                      if (mounted) setState(() => _item = _resolvedItem(_item));
+                    }, success: '本地收藏已更新'),
+                  );
+                  break;
                 case 'readLater':
                   unawaited(_toggleReadLater());
                   break;
@@ -960,12 +1315,47 @@ class _DetailScreenState extends State<DetailScreen> {
                 case 'blockForum':
                   unawaited(_blockForum());
                   break;
+                case 'blockAuthor':
+                  unawaited(_blockAuthor());
+                  break;
                 case 'openForum':
                   _openForum();
                   break;
               }
             },
             itemBuilder: (_) => <PopupMenuEntry<String>>[
+              if (hasAuthorIdentity(_item.author))
+                PopupMenuItem<String>(
+                  value: 'blockAuthor',
+                  child: Text(
+                    widget.controller.isAuthorBlocked(_item.author.ref)
+                        ? '解除屏蔽作者'
+                        : '屏蔽作者',
+                  ),
+                ),
+              PopupMenuItem(
+                value: 'offline',
+                enabled: _detail != null && !_offlineSaving,
+                child: Text(_offlineSaving ? '正在下载…' : '下载离线正文与图片'),
+              ),
+              const PopupMenuItem(
+                value: 'offlineLibrary',
+                child: Text('管理离线下载'),
+              ),
+              if (tiebaThread &&
+                  (_previousReading?.floor ?? 0) > 0 &&
+                  !_reverse &&
+                  !_onlyOriginalPoster)
+                PopupMenuItem(
+                  value: 'continueThread',
+                  child: Text('继续追楼（上次 ${_previousReading!.floor} 楼）'),
+                ),
+              if (_item.ref.source == SourceId.xhs)
+                CheckedPopupMenuItem<String>(
+                  value: 'localSave',
+                  checked: widget.controller.isSaved(_item),
+                  child: const Text('保存到本机（独立于平台收藏）'),
+                ),
               CheckedPopupMenuItem<String>(
                 value: 'readLater',
                 enabled: !_readLaterWorking && _item.ref.id.isNotEmpty,
@@ -1075,7 +1465,8 @@ class _DetailScreenState extends State<DetailScreen> {
                     onRetry: _loading ? null : _load,
                   ),
                 ),
-              if (_item.media.isNotEmpty)
+              if (_item.media.isNotEmpty &&
+                  (detail?.contentHtml.isEmpty ?? true))
                 SliverToBoxAdapter(
                   child: _MediaCarousel(
                     item: _item,
@@ -1097,6 +1488,10 @@ class _DetailScreenState extends State<DetailScreen> {
                 child: _DetailHeader(
                   item: _item,
                   body: detail?.body ?? _item.summary,
+                  contentHtml: detail?.contentHtml ?? '',
+                  showMedia: !widget.controller.hideMedia,
+                  onImage: (media) =>
+                      _openImage(_item.ref.source, media, items: _item.media),
                   following: _following,
                   canFollow: _canFollow,
                   working: _working,
@@ -1112,6 +1507,98 @@ class _DetailScreenState extends State<DetailScreen> {
                   readingPreferences: _readingPreferences,
                 ),
               ),
+              if (_item.ref.source == SourceId.zhihu &&
+                  _item.ref.contentKind == 'answer' &&
+                  _item.ref.parentId.isNotEmpty)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.question_answer_outlined),
+                      label: const Text('查看问题与其他回答'),
+                      onPressed: () => _openAnswer(
+                        FeedItem(
+                          ref: ContentRef(
+                            source: SourceId.zhihu,
+                            id: _item.ref.parentId,
+                            kind: 'question',
+                            token: 'question',
+                            url:
+                                'https://www.zhihu.com/question/${_item.ref.parentId}',
+                          ),
+                          title: _item.title,
+                          author: _item.author,
+                          stats: const ItemStats(),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              if (_item.ref.source == SourceId.zhihu &&
+                  _item.ref.contentKind == 'question') ...[
+                const SliverToBoxAdapter(
+                  child: Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text(
+                      '回答 · 默认排序',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+                SliverList.builder(
+                  itemCount: answers.length,
+                  itemBuilder: (context, index) {
+                    final answer = answers[index];
+                    return ListTile(
+                      key: ValueKey('answer-${answer.key}'),
+                      leading: AuthorAvatar(author: answer.author, radius: 18),
+                      title: Text(answer.author.name),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            answer.summary,
+                            maxLines: 4,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          Text(
+                            '${answer.stats.likes} 赞同 · ${answer.stats.comments} 评论',
+                          ),
+                        ],
+                      ),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => _openAnswer(answer),
+                    );
+                  },
+                ),
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      children: [
+                        if (_answersError != null)
+                          Text(safeSourceMessage(_answersError!)),
+                        if (_answersMore)
+                          OutlinedButton(
+                            onPressed: _answersLoading ? null : _loadAnswers,
+                            child: Text(
+                              _answersLoading
+                                  ? '正在加载回答…'
+                                  : _answersError == null
+                                  ? '继续阅读更多回答'
+                                  : '重试加载回答',
+                            ),
+                          ),
+                        if (answers.isEmpty && !_answersMore)
+                          const Text('暂无可读取的回答'),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(16, 20, 16, 10),
@@ -1152,7 +1639,22 @@ class _DetailScreenState extends State<DetailScreen> {
                   ),
                 ),
               ),
-              if (comments.isEmpty && !_loading)
+              if (tiebaThread &&
+                  _previousReading != null &&
+                  _item.stats.comments > _previousReading!.replyCount &&
+                  _previousReading!.replyCount > 0)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text(
+                      '回复数比上次打开多 ${_item.stats.comments - _previousReading!.replyCount} 条',
+                    ),
+                  ),
+                ),
+              if (comments.isEmpty &&
+                  !_loading &&
+                  !_loadingMore &&
+                  _paginationError == null)
                 const SliverToBoxAdapter(
                   child: AppStateView(
                     icon: Icons.chat_bubble_outline_rounded,
@@ -1174,6 +1676,7 @@ class _DetailScreenState extends State<DetailScreen> {
                               () => GlobalKey(),
                             ),
                       child: _CommentTile(
+                        controller: widget.controller,
                         comment: comment,
                         originalPosterId: _item.author.id,
                         density: widget.controller.density,
@@ -1193,12 +1696,26 @@ class _DetailScreenState extends State<DetailScreen> {
                         onTopicTap: _item.ref.source == SourceId.xhs
                             ? _openTopic
                             : null,
+                        repliesLabel: _loadingReplies.contains(comment.ref.id)
+                            ? '正在加载…'
+                            : _expandedReplies.contains(comment.ref.id)
+                            ? '收起回复'
+                            : tiebaThread &&
+                                  comment.replyCount <= 5 &&
+                                  !_longReplies.contains(comment.ref.id)
+                            ? '就地展开 ${comment.replyCount} 条回复'
+                            : null,
                         onOpenReplies:
                             widget.controller.supportsFloorReplies(
                                   _item.ref.source,
                                 ) &&
                                 comment.replyCount > 0
-                            ? () => _openFloorReplies(comment)
+                            ? () =>
+                                  tiebaThread &&
+                                      comment.replyCount <= 5 &&
+                                      !_longReplies.contains(comment.ref.id)
+                                  ? unawaited(_toggleInlineReplies(comment))
+                                  : _openFloorReplies(comment)
                             : null,
                       ),
                     );
@@ -1219,7 +1736,8 @@ class _DetailScreenState extends State<DetailScreen> {
               else if (_paginationError != null)
                 SliverToBoxAdapter(
                   child: _InlineLoadFailure(
-                    message: '加载更多回复失败：${safeSourceMessage(_paginationError!)}',
+                    message:
+                        '${comments.isEmpty ? '评论加载失败' : '加载更多回复失败'}：${safeSourceMessage(_paginationError!)}',
                     onRetry: _loading ? null : _loadMore,
                   ),
                 )
@@ -1392,6 +1910,9 @@ class _DetailHeader extends StatelessWidget {
   const _DetailHeader({
     required this.item,
     required this.body,
+    this.contentHtml = '',
+    this.showMedia = true,
+    required this.onImage,
     required this.following,
     required this.canFollow,
     required this.working,
@@ -1405,6 +1926,9 @@ class _DetailHeader extends StatelessWidget {
 
   final FeedItem item;
   final String body;
+  final String contentHtml;
+  final bool showMedia;
+  final ValueChanged<MediaItem> onImage;
   final bool following;
   final bool canFollow;
   final bool working;
@@ -1469,7 +1993,15 @@ class _DetailHeader extends StatelessWidget {
             ),
             const SizedBox(height: 10),
           ],
-          if (body.isNotEmpty)
+          if (contentHtml.isNotEmpty && contentHtml.length <= 2 * 1024 * 1024)
+            StructuredBody(
+              content: contentHtml,
+              showImages: showMedia,
+              source: item.ref.source,
+              preferences: readingPreferences,
+              onImage: onImage,
+            )
+          else if (body.isNotEmpty)
             SocialRichText(
               text: body,
               source: item.ref.source,
@@ -1571,6 +2103,7 @@ void _reconcileCommentLikes(
 
 class _CommentTile extends StatelessWidget {
   const _CommentTile({
+    required this.controller,
     required this.comment,
     required this.originalPosterId,
     required this.density,
@@ -1578,6 +2111,7 @@ class _CommentTile extends StatelessWidget {
     required this.onReply,
     required this.onOpenImage,
     this.onOpenReplies,
+    this.repliesLabel,
     this.onTopicTap,
     this.canLike = false,
     this.likeWorking = false,
@@ -1586,12 +2120,14 @@ class _CommentTile extends StatelessWidget {
   });
 
   final FeedComment comment;
+  final MixsocialController controller;
   final String originalPosterId;
   final FeedDensity density;
   final bool canReply;
   final VoidCallback onReply;
   final ValueChanged<MediaItem> onOpenImage;
   final VoidCallback? onOpenReplies;
+  final String? repliesLabel;
   final ValueChanged<String>? onTopicTap;
   final bool canLike;
   final bool likeWorking;
@@ -1632,6 +2168,16 @@ class _CommentTile extends StatelessWidget {
                       const Badge(label: Text('楼主')),
                     ],
                     const Spacer(),
+                    if (hasAuthorIdentity(comment.author))
+                      IconButton(
+                        tooltip: '关注与屏蔽评论作者',
+                        onPressed: () => showAuthorActions(
+                          context,
+                          controller,
+                          comment.author,
+                        ),
+                        icon: const Icon(Icons.more_horiz, size: 18),
+                      ),
                     Text(
                       <String>[
                         if (comment.floor > 0) '${comment.floor}楼',
@@ -1680,36 +2226,45 @@ class _CommentTile extends StatelessWidget {
                           for (final reply in comment.replies)
                             Padding(
                               padding: const EdgeInsets.only(bottom: 5),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: <Widget>[
-                                  SocialRichText(
-                                    text: reply.body,
-                                    source: reply.ref.source,
-                                    style: TextStyle(
-                                      fontSize: readingPreferences.fontSize,
-                                      height: readingPreferences.lineHeight,
-                                    ),
-                                    onTopicTap: onTopicTap,
-                                    leading: <InlineSpan>[
-                                      TextSpan(
-                                        text: '${reply.author.name}：',
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.w600,
+                              child: GestureDetector(
+                                onLongPress: hasAuthorIdentity(reply.author)
+                                    ? () => showAuthorActions(
+                                        context,
+                                        controller,
+                                        reply.author,
+                                      )
+                                    : null,
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: <Widget>[
+                                    SocialRichText(
+                                      text: reply.body,
+                                      source: reply.ref.source,
+                                      style: TextStyle(
+                                        fontSize: readingPreferences.fontSize,
+                                        height: readingPreferences.lineHeight,
+                                      ),
+                                      onTopicTap: onTopicTap,
+                                      leading: <InlineSpan>[
+                                        TextSpan(
+                                          text: '${reply.author.name}：',
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.w600,
+                                          ),
                                         ),
+                                      ],
+                                    ),
+                                    if (reply.media.isNotEmpty) ...<Widget>[
+                                      const SizedBox(height: 6),
+                                      _CommentMediaStrip(
+                                        media: reply.media,
+                                        source: reply.ref.source,
+                                        onOpenImage: onOpenImage,
+                                        dimension: 68,
                                       ),
                                     ],
-                                  ),
-                                  if (reply.media.isNotEmpty) ...<Widget>[
-                                    const SizedBox(height: 6),
-                                    _CommentMediaStrip(
-                                      media: reply.media,
-                                      source: reply.ref.source,
-                                      onOpenImage: onOpenImage,
-                                      dimension: 68,
-                                    ),
                                   ],
-                                ],
+                                ),
                               ),
                             ),
                           if (onOpenReplies != null)
@@ -1720,9 +2275,10 @@ class _CommentTile extends StatelessWidget {
                                 visualDensity: VisualDensity.compact,
                               ),
                               child: Text(
-                                comment.replyCount > comment.replies.length
-                                    ? '查看全部 ${comment.replyCount} 条回复'
-                                    : '查看楼中楼',
+                                repliesLabel ??
+                                    (comment.replyCount > comment.replies.length
+                                        ? '查看全部 ${comment.replyCount} 条回复'
+                                        : '查看楼中楼'),
                               ),
                             ),
                         ],
@@ -1881,6 +2437,10 @@ class _FloorRepliesScreenState extends State<_FloorRepliesScreen> {
   bool _working = false;
   int _requestGeneration = 0;
 
+  void _relationshipsChanged() {
+    if (mounted) setState(() {});
+  }
+
   bool get _canReply =>
       widget.contentRef.source == SourceId.tieba ||
       widget.controller.supports(
@@ -1932,6 +2492,7 @@ class _FloorRepliesScreenState extends State<_FloorRepliesScreen> {
   @override
   void initState() {
     super.initState();
+    widget.controller.addListener(_relationshipsChanged);
     _scrollController.addListener(() {
       if (_error == null && _scrollController.position.extentAfter < 420) {
         unawaited(_loadMore());
@@ -1942,6 +2503,7 @@ class _FloorRepliesScreenState extends State<_FloorRepliesScreen> {
 
   @override
   void dispose() {
+    widget.controller.removeListener(_relationshipsChanged);
     _scrollController.dispose();
     super.dispose();
   }
@@ -2113,7 +2675,8 @@ class _FloorRepliesScreenState extends State<_FloorRepliesScreen> {
   @override
   Widget build(BuildContext context) {
     final parent = _withCommentLikeUpdates(widget.comment, _commentLikeUpdates);
-    final replies = _replies
+    final replies = widget.controller
+        .prepareComments(_replies)
         .map((comment) => _withCommentLikeUpdates(comment, _commentLikeUpdates))
         .toList();
     return Scaffold(
@@ -2132,28 +2695,30 @@ class _FloorRepliesScreenState extends State<_FloorRepliesScreen> {
               const SliverToBoxAdapter(
                 child: LinearProgressIndicator(minHeight: 2),
               ),
-            SliverToBoxAdapter(
-              child: _CommentTile(
-                comment: parent.copyWith(replies: const <FeedComment>[]),
-                originalPosterId: widget.originalPosterId,
-                density: widget.controller.density,
-                readingPreferences: widget.readingPreferences,
-                canReply: _canReply && !_working,
-                canLike: _canLikeComment,
-                likeWorking: _pendingCommentLikes.contains(parent.ref.id),
-                onLike: () => _likeComment(parent),
-                onReply: () => _reply(widget.comment),
-                onOpenImage: (MediaItem media) => _openImage(
-                  widget.comment.ref.source,
-                  media,
-                  items: widget.comment.media,
+            if (!widget.controller.isAuthorBlocked(parent.author.ref))
+              SliverToBoxAdapter(
+                child: _CommentTile(
+                  controller: widget.controller,
+                  comment: parent.copyWith(replies: const <FeedComment>[]),
+                  originalPosterId: widget.originalPosterId,
+                  density: widget.controller.density,
+                  readingPreferences: widget.readingPreferences,
+                  canReply: _canReply && !_working,
+                  canLike: _canLikeComment,
+                  likeWorking: _pendingCommentLikes.contains(parent.ref.id),
+                  onLike: () => _likeComment(parent),
+                  onReply: () => _reply(widget.comment),
+                  onOpenImage: (MediaItem media) => _openImage(
+                    widget.comment.ref.source,
+                    media,
+                    items: widget.comment.media,
+                  ),
+                  onTopicTap: widget.comment.ref.source == SourceId.xhs
+                      ? (String topic) => widget.controller
+                            .requestSearchNavigation(SourceId.xhs, topic)
+                      : null,
                 ),
-                onTopicTap: widget.comment.ref.source == SourceId.xhs
-                    ? (String topic) => widget.controller
-                          .requestSearchNavigation(SourceId.xhs, topic)
-                    : null,
               ),
-            ),
             const SliverToBoxAdapter(child: Divider(height: 1)),
             if (_error != null)
               SliverToBoxAdapter(
@@ -2175,7 +2740,7 @@ class _FloorRepliesScreenState extends State<_FloorRepliesScreen> {
                   ),
                 ),
               ),
-            if (!_loading && _replies.isEmpty)
+            if (!_loading && replies.isEmpty)
               const SliverToBoxAdapter(
                 child: Padding(
                   padding: EdgeInsets.all(24),
@@ -2186,6 +2751,7 @@ class _FloorRepliesScreenState extends State<_FloorRepliesScreen> {
               SliverList.builder(
                 itemCount: replies.length,
                 itemBuilder: (BuildContext context, int index) => _CommentTile(
+                  controller: widget.controller,
                   comment: replies[index],
                   originalPosterId: widget.originalPosterId,
                   density: widget.controller.density,
@@ -2196,13 +2762,13 @@ class _FloorRepliesScreenState extends State<_FloorRepliesScreen> {
                     replies[index].ref.id,
                   ),
                   onLike: () => _likeComment(replies[index]),
-                  onReply: () => _reply(_replies[index]),
+                  onReply: () => _reply(replies[index]),
                   onOpenImage: (MediaItem media) => _openImage(
-                    _replies[index].ref.source,
+                    replies[index].ref.source,
                     media,
-                    items: _replies[index].media,
+                    items: replies[index].media,
                   ),
-                  onTopicTap: _replies[index].ref.source == SourceId.xhs
+                  onTopicTap: replies[index].ref.source == SourceId.xhs
                       ? (String topic) => widget.controller
                             .requestSearchNavigation(SourceId.xhs, topic)
                       : null,
@@ -2307,9 +2873,19 @@ class _InteractionBar extends StatelessWidget {
               ),
               Expanded(
                 child: _ActionButton(
-                  icon: item.favorited ? Icons.bookmark : Icons.bookmark_border,
-                  label: compactCount(item.stats.favorites),
-                  selected: item.favorited,
+                  icon:
+                      (item.ref.source == SourceId.xhs
+                          ? item.favorited
+                          : item.localSaved)
+                      ? Icons.bookmark
+                      : Icons.bookmark_border,
+                  label: item.ref.source == SourceId.xhs ? '平台收藏' : '本地收藏',
+                  tooltip: item.ref.source == SourceId.xhs
+                      ? '收藏到小红书'
+                      : '保存到本机，不改变平台收藏',
+                  selected: item.ref.source == SourceId.xhs
+                      ? item.favorited
+                      : item.localSaved,
                   onPressed: canFavorite && !working ? onFavorite : null,
                 ),
               ),

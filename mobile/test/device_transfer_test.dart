@@ -24,12 +24,49 @@ void main() {
       expect(decoded.theme, AppThemePreference.dark);
       expect(decoded.readingStates['tieba:123']?.page, 3);
       expect(decoded.accountLabels, <String>['小红书', '贴吧', '知乎']);
+      expect(decoded.blockedAuthors.single.ref.key, 'zhihu:blocked-author');
+      expect(decoded.blockedAuthors.single.name, '屏蔽作者');
     });
+
+    test(
+      'v1/v2 payloads remain readable and preference exclusion survives transport',
+      () {
+        final legacy = jsonDecode(_payload().encode()) as Map<String, dynamic>;
+        legacy['version'] = 1;
+        legacy.remove('includePreferences');
+        (legacy['preferences'] as Map).remove('sourceWeights');
+        (legacy['preferences'] as Map).remove('unreadFirst');
+        (legacy['preferences'] as Map).remove('blockedAuthors');
+        expect(
+          DeviceTransferPayload.decode(jsonEncode(legacy)).includePreferences,
+          true,
+        );
+        final scoped = jsonDecode(_payload().encode()) as Map<String, dynamic>;
+        scoped['version'] = 2;
+        (scoped['preferences'] as Map).remove('blockedAuthors');
+        scoped['includePreferences'] = false;
+        expect(
+          DeviceTransferPayload.decode(jsonEncode(scoped)).includePreferences,
+          false,
+        );
+      },
+    );
 
     test('rejects unknown fields before import', () {
       final json = jsonDecode(_payload().encode()) as Map<String, dynamic>;
       json['credentials']['plaintextBackup'] = 'unexpected';
 
+      expect(
+        () => DeviceTransferPayload.decode(jsonEncode(json)),
+        throwsFormatException,
+      );
+    });
+
+    test('rejects blocked authors without a source or stable identity', () {
+      final json = jsonDecode(_payload().encode()) as Map<String, dynamic>;
+      json['preferences']['blockedAuthors'] = [
+        {'source': 'all', 'id': '', 'name': '未知作者'},
+      ];
       expect(
         () => DeviceTransferPayload.decode(jsonEncode(json)),
         throwsFormatException,
@@ -194,6 +231,13 @@ DeviceTransferPayload _payload() {
     hideVideos: true,
     hideMedia: false,
     followingProfiles: const <String>{'tieba:7'},
+    blockedAuthors: const [
+      Author(
+        ref: ProfileRef(source: SourceId.zhihu, id: 'blocked-author'),
+        id: 'blocked-author',
+        name: '屏蔽作者',
+      ),
+    ],
     recentForums: const <String>['测试'],
     searchHistory: const <SourceId, List<String>>{
       SourceId.all: <String>['Flutter'],

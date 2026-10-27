@@ -113,7 +113,8 @@ void main() {
     final saved = await settings.savedItems();
     expect(saved, hasLength(1));
     expect(saved.single.key, favorite.key);
-    expect(saved.single.favorited, isTrue);
+    expect(saved.single.localSaved, isTrue);
+    expect(saved.single.favorited, isFalse);
 
     await settings.setSaved(favorite, false);
     expect(await settings.savedItems(), isEmpty);
@@ -156,24 +157,25 @@ void main() {
     },
   );
 
-  test(
-    'read later keeps the most recent 300 items and handles bad data',
-    () async {
-      for (var index = 0; index < 302; index++) {
-        await settings.setReadLater(_item(index), true);
-      }
-      await settings.setReadLater(_item(8).copyWith(title: '更新标题'), true);
-      final items = await settings.readLaterItems();
-      expect(items, hasLength(300));
-      expect(items.first.key, _item(8).key);
-      expect(items.first.title, '更新标题');
-      expect(await settings.isReadLater(_item(1).key), isFalse);
-      expect(await settings.isReadLater(_item(2).key), isTrue);
+  test('read later rejects overflow without evicting saved items', () async {
+    for (var index = 0; index < 300; index++) {
+      await settings.setReadLater(_item(index), true);
+    }
+    await expectLater(
+      settings.setReadLater(_item(301), true),
+      throwsFormatException,
+    );
+    await settings.setReadLater(_item(8).copyWith(title: '更新标题'), true);
+    final items = await settings.readLaterItems();
+    expect(items, hasLength(300));
+    expect(items.first.key, _item(8).key);
+    expect(items.first.title, '更新标题');
+    expect(await settings.isReadLater(_item(1).key), isTrue);
+    expect(await settings.isReadLater(_item(2).key), isTrue);
 
-      await preferences.setString('library.readLaterState.v1', '{broken');
-      expect(await settings.readLaterItems(), isEmpty);
-      await settings.setReadLater(_item(9), true);
-      expect((await settings.readLaterItems()).single.key, _item(9).key);
-    },
-  );
+    await preferences.setString('library.readLaterState.v1', '{broken');
+    expect(await settings.readLaterItems(), isEmpty);
+    await settings.setReadLater(_item(9), true);
+    expect((await settings.readLaterItems()).single.key, _item(9).key);
+  });
 }

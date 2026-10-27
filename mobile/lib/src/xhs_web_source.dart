@@ -78,6 +78,7 @@ class XhsWebSource
   final WebViewController controller;
   Completer<Uri>? _pageFinished;
   Future<void> _operationTail = Future<void>.value();
+  int _readGeneration = 0;
   String? _activeListKey;
   String? _activeDetailId;
   int _detailCommentCount = 0;
@@ -252,7 +253,7 @@ class XhsWebSource
 
   @override
   Future<FeedPage> browse(FeedChannel channel, {String cursor = ''}) =>
-      _exclusive(() async {
+      _exclusiveRead(() async {
         final listKey = 'browse:${channel.id}';
         if (cursor.isEmpty || _activeListKey != listKey) {
           await _navigate(Uri.parse(_exploreUrl));
@@ -263,13 +264,11 @@ class XhsWebSource
           }
           _activeListKey = listKey;
         }
-        if (cursor.isNotEmpty) {
-          await controller.scrollBy(0, 1800);
-          await Future<void>.delayed(const Duration(milliseconds: 900));
-        }
-        var page = _scrollablePage(
-          FeedPage.decode(await _waitForJson(xhsFeedScript)),
-        );
+        var page = cursor.isNotEmpty
+            ? await _loadMoreFeed(xhsFeedScript, cursor: cursor)
+            : _scrollablePage(
+                FeedPage.decode(await _waitForJson(xhsFeedScript)),
+              );
         if (channel == FeedChannel.hot) {
           final items = List<FeedItem>.of(page.items)
             ..sort(
@@ -278,8 +277,8 @@ class XhsWebSource
             );
           page = FeedPage(
             items: items,
-            nextCursor: 'more',
-            hasMore: items.isNotEmpty,
+            nextCursor: page.nextCursor,
+            hasMore: page.hasMore,
             notices: const <String>['小红书网页没有官方全站热榜，当前按本次推荐样本的互动量排序'],
           );
         }
@@ -288,7 +287,7 @@ class XhsWebSource
 
   @override
   Future<FeedPage> search(String query, {String cursor = ''}) =>
-      _exclusive(() async {
+      _exclusiveRead(() async {
         final keyword = query.trim();
         if (keyword.isEmpty) throw ArgumentError('请输入搜索词');
         final uri = Uri.https(
@@ -302,17 +301,10 @@ class XhsWebSource
           await _applySearchFilters();
           _activeListKey = listKey;
         }
-        if (cursor.isNotEmpty) {
-          await controller.scrollBy(0, 1800);
-          await Future<void>.delayed(const Duration(milliseconds: 900));
-        }
-        return _scrollablePage(
-          FeedPage.decode(
-            await _waitForJson(
-              xhsFeedScript.replaceAll('state.feed', 'state.search'),
-            ),
-          ),
-        );
+        final script = xhsFeedScript.replaceAll('state.feed', 'state.search');
+        return cursor.isNotEmpty
+            ? _loadMoreFeed(script, cursor: cursor)
+            : _scrollablePage(FeedPage.decode(await _waitForJson(script)));
       });
 
   @override
@@ -324,7 +316,7 @@ class XhsWebSource
     String cursor = '',
     bool reverse = false,
     bool onlyOriginalPoster = false,
-  }) => _exclusive(() async {
+  }) => _exclusiveRead(() async {
     _requireXhs(ref);
     if (reverse || onlyOriginalPoster) {
       throw StateError('小红书评论页不支持倒序或只看作者');
@@ -749,6 +741,43 @@ class XhsWebSource
     }
   }
 
+  Future<FeedPage> _loadMoreFeed(String script, {String cursor = ''}) async {
+    var before = FeedPage.decode(await _waitForJson(script));
+    final previousCount = int.tryParse(cursor) ?? 0;
+    // Restore a shared WebView list after a detail/profile navigation. Bound each
+    // attempt so a long previous session can be continued with explicit retry.
+    for (
+      var round = 0;
+      before.hasMore && before.items.length < previousCount && round < 4;
+      round++
+    ) {
+      before = await _loadMoreFeed(script);
+    }
+    if (before.hasMore && before.items.length < previousCount) {
+      throw StateError('正在恢复先前的小红书列表，请点击继续加载');
+    }
+    if (!before.hasMore) return _scrollablePage(before);
+    final known = before.items.map((item) => item.key).toSet();
+    await controller.scrollBy(0, 1800);
+    for (var attempt = 0; attempt < 20; attempt++) {
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      final page = FeedPage.decode(await _waitForJson(script));
+      if (!page.hasMore ||
+          page.items.any((item) => !known.contains(item.key))) {
+        return _scrollablePage(page);
+      }
+    }
+    throw TimeoutException('小红书新内容仍在加载，请重试');
+  }
+
+  Future<T> _exclusiveRead<T>(Future<T> Function() operation) {
+    final generation = ++_readGeneration;
+    return _exclusive(() {
+      if (generation != _readGeneration) throw StateError('读取已被新的页面请求替代');
+      return operation();
+    });
+  }
+
   Future<T> _exclusive<T>(Future<T> Function() operation) {
     final task = _operationTail.then<T>((_) => operation());
     _operationTail = task.then<void>(
@@ -910,8 +939,8 @@ class XhsWebSource
 
   FeedPage _scrollablePage(FeedPage page) => FeedPage(
     items: page.items,
-    nextCursor: page.items.isEmpty ? '' : 'more',
-    hasMore: page.items.isNotEmpty,
+    nextCursor: page.hasMore ? '${page.items.length}' : '',
+    hasMore: page.hasMore,
     notices: page.notices,
   );
 }

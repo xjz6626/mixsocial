@@ -7,6 +7,17 @@ import 'network_media.dart';
 class MediaTools {
   static const channel = MethodChannel('mixsocial/media_tools');
 
+  static Future<void> openUrl(String value) async {
+    final uri = Uri.tryParse(value);
+    if (uri == null ||
+        !const {'https', 'http'}.contains(uri.scheme) ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty) {
+      throw const FormatException('链接无效');
+    }
+    await channel.invokeMethod<void>('openUrl', {'url': value});
+  }
+
   static Future<void> shareText(String text, {String title = '分享'}) async {
     if (text.trim().isEmpty || text.length > 128 * 1024) {
       throw const FormatException('分享文本为空或过长');

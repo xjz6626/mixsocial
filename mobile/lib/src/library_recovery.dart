@@ -45,10 +45,15 @@ class LibraryRecovery {
 
   Future<void> setSaved(FeedItem item, bool value) => _serial(() async {
     final state = await _load();
+    if (value &&
+        state.items.where((existing) => existing.key != item.key).length >=
+            _limit) {
+      throw FormatException('本地收藏已满（$_limit 条），请先整理；已有内容不会被移除');
+    }
     final items = <FeedItem>[
-      if (value) item.copyWith(favorited: true),
+      if (value) item.copyWith(localSaved: true),
       ...state.items.where((existing) => existing.key != item.key),
-    ].take(_limit).toList();
+    ];
     final edits = <_LibraryEdit>[
       ...state.edits.where((edit) => edit.item?.key != item.key),
       _LibraryEdit(value ? 'save' : 'remove', item),

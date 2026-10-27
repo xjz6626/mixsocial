@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_controller.dart';
 import 'device_transfer.dart';
+import 'design_system.dart';
 import 'library_backup.dart';
 import 'library_organizer.dart';
 import 'models.dart';
@@ -32,20 +33,38 @@ class DeviceTransferService {
   final MixsocialController controller;
   final SharedPreferencesAsync _preferences;
 
-  Future<DeviceTransferPayload> createPayload() async {
-    final saved = await controller.savedItems();
-    final readLater = await controller.readLaterItems();
-    final history = await controller.historyItems();
-    final organization = await controller.settings.organization.read();
-    final reading = await ReadingStateStore().all();
+  Future<DeviceTransferPayload> createPayload({
+    bool includeLibrary = true,
+    bool includePreferences = true,
+    Set<SourceId> accounts = const {
+      SourceId.xhs,
+      SourceId.tieba,
+      SourceId.zhihu,
+    },
+  }) async {
+    final saved = includeLibrary ? await controller.savedItems() : <FeedItem>[];
+    final readLater = includeLibrary
+        ? await controller.readLaterItems()
+        : <FeedItem>[];
+    final history = includeLibrary
+        ? await controller.historyItems()
+        : <FeedItem>[];
+    final organization = includeLibrary
+        ? await controller.settings.organization.read()
+        : LibraryOrganization();
+    final reading = includeLibrary
+        ? await ReadingStateStore().all()
+        : <String, ReadingState>{};
     final search = SearchHistoryStore();
     final searchHistory = <SourceId, List<String>>{};
     for (final source in SourceId.values) {
-      searchHistory[source] = await search.read(source);
+      if (includeLibrary) searchHistory[source] = await search.read(source);
     }
     final layouts = <SourceId, FeedLayout>{};
     for (final source in SourceId.values) {
-      layouts[source] = await controller.settings.layoutFor(source);
+      if (includePreferences) {
+        layouts[source] = await controller.settings.layoutFor(source);
+      }
     }
     final libraryJson = LibraryBackup.encode(
       saved: saved,
@@ -57,24 +76,47 @@ class DeviceTransferService {
       readLater: const <FeedItem>[],
       organization: LibraryOrganization(),
     );
-    final tiebaCredential = await controller.tieba
-        .exportCredentialForTransfer();
-    final zhihuCredential = await controller.zhihu
-        .exportCredentialForTransfer();
-    final xhsCookies = await controller.xhs.exportCookiesForTransfer();
+    final tiebaCredential = accounts.contains(SourceId.tieba)
+        ? await controller.tieba.exportCredentialForTransfer()
+        : null;
+    final zhihuCredential = accounts.contains(SourceId.zhihu)
+        ? await controller.zhihu.exportCredentialForTransfer()
+        : null;
+    final xhsCookies = accounts.contains(SourceId.xhs)
+        ? await controller.xhs.exportCookiesForTransfer()
+        : <Map<String, String>>[];
     return DeviceTransferPayload(
+      includePreferences: includePreferences,
+      sourceWeights: includePreferences
+          ? await controller.settings.sourceWeights()
+          : {},
+      unreadFirst:
+          includePreferences && await controller.settings.unreadFirst(),
       createdAt: DateTime.now(),
       libraryJson: libraryJson,
       historyJson: historyJson,
       layouts: layouts,
-      theme: await controller.settings.themePreference(),
-      density: await controller.settings.feedDensity(),
-      blockedForums: await controller.settings.blockedForums(),
-      blockedKeywords: await controller.settings.blockedKeywords(),
-      hideVideos: await controller.settings.hideVideos(),
-      hideMedia: await controller.settings.hideMedia(),
-      followingProfiles: await controller.settings.followingProfiles(),
-      recentForums: await controller.settings.recentForums(),
+      theme: includePreferences
+          ? await controller.settings.themePreference()
+          : AppThemePreference.system,
+      density: includePreferences
+          ? await controller.settings.feedDensity()
+          : FeedDensity.standard,
+      blockedForums: includePreferences
+          ? await controller.settings.blockedForums()
+          : {},
+      blockedAuthors: includePreferences
+          ? await controller.settings.blockedAuthors()
+          : [],
+      blockedKeywords: includePreferences
+          ? await controller.settings.blockedKeywords()
+          : {},
+      hideVideos: includePreferences && await controller.settings.hideVideos(),
+      hideMedia: includePreferences && await controller.settings.hideMedia(),
+      followingProfiles: {},
+      recentForums: includeLibrary
+          ? await controller.settings.recentForums()
+          : [],
       searchHistory: searchHistory,
       readingStates: reading,
       tiebaCredential: tiebaCredential,
@@ -119,24 +161,33 @@ class DeviceTransferService {
         await controller.settings.addRecentForum(forum);
       }
     });
-    await _runPhase(payloadId, completed, 'preferences', () async {
-      for (final entry in checked.layouts.entries) {
-        await controller.settings.setLayout(entry.key, entry.value);
-      }
-      await controller.settings.setThemePreference(checked.theme);
-      await controller.settings.setFeedDensity(checked.density);
-      await controller.settings.setHideVideos(checked.hideVideos);
-      await controller.settings.setHideMedia(checked.hideMedia);
-      for (final forum in checked.blockedForums) {
-        await controller.settings.setForumBlocked(forum, true);
-      }
-      for (final keyword in checked.blockedKeywords) {
-        await controller.settings.setKeywordBlocked(keyword, true);
-      }
-      await controller.settings.mergeFollowingProfiles(
-        checked.followingProfiles,
-      );
-    });
+    if (checked.includePreferences) {
+      await _runPhase(payloadId, completed, 'preferences', () async {
+        for (final entry in checked.sourceWeights.entries) {
+          await controller.settings.setSourceWeight(entry.key, entry.value);
+        }
+        await controller.settings.setUnreadFirst(checked.unreadFirst);
+        for (final entry in checked.layouts.entries) {
+          await controller.settings.setLayout(entry.key, entry.value);
+        }
+        await controller.settings.setThemePreference(checked.theme);
+        await controller.settings.setFeedDensity(checked.density);
+        await controller.settings.setHideVideos(checked.hideVideos);
+        await controller.settings.setHideMedia(checked.hideMedia);
+        for (final forum in checked.blockedForums) {
+          await controller.settings.setForumBlocked(forum, true);
+        }
+        for (final author in checked.blockedAuthors) {
+          await controller.settings.setAuthorBlocked(author, true);
+        }
+        for (final keyword in checked.blockedKeywords) {
+          await controller.settings.setKeywordBlocked(keyword, true);
+        }
+        await controller.settings.mergeFollowingProfiles(
+          checked.followingProfiles,
+        );
+      });
+    }
 
     final restoredAccounts = <String>[];
     final warnings = <String>[];
@@ -150,18 +201,21 @@ class DeviceTransferService {
     }
 
     if (checked.xhsCookies.isNotEmpty) {
+      await controller.accountChanged(SourceId.xhs);
       await restore(
         '小红书',
         () => controller.xhs.importCookiesFromTransfer(checked.xhsCookies),
       );
     }
     if (checked.tiebaCredential case final credential?) {
+      await controller.accountChanged(SourceId.tieba);
       await restore(
         '贴吧',
         () => controller.tieba.importCredentialFromTransfer(credential),
       );
     }
     if (checked.zhihuCredential case final credential?) {
+      await controller.accountChanged(SourceId.zhihu);
       await restore(
         '知乎',
         () => controller.zhihu.importCredentialFromTransfer(credential),

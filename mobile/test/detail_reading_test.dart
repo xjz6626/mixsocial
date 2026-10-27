@@ -117,6 +117,42 @@ void main() {
   });
   tearDown(() => controller.dispose());
 
+  testWidgets(
+    'body remains readable when first comments fail and retry does not refetch body',
+    (tester) async {
+      var bodies = 0;
+      var comments = 0;
+      controller.onDetail = (cursor) async {
+        if (cursor.isEmpty) {
+          bodies++;
+          return const FeedDetail(
+            item: _note,
+            body: '先显示完整正文',
+            commentsPending: true,
+          );
+        }
+        comments++;
+        if (comments == 1) throw StateError('offline');
+        return FeedDetail(
+          item: _note,
+          body: '',
+          comments: [_comment('重试后的评论')],
+        );
+      };
+      await _showDetail(tester, controller);
+      await tester.pumpAndSettle();
+      expect(find.text('先显示完整正文', findRichText: true), findsOneWidget);
+      expect(find.text('还没有评论'), findsNothing);
+      expect(find.textContaining('评论加载失败'), findsOneWidget);
+      await tester.ensureVisible(find.text('重试'));
+      await tester.tap(find.text('重试'));
+      await tester.pumpAndSettle();
+      expect(bodies, 1);
+      expect(comments, 2);
+      expect(find.text('重试后的评论', findRichText: true), findsOneWidget);
+    },
+  );
+
   testWidgets('read later stays independent from Xiaohongshu favorites', (
     WidgetTester tester,
   ) async {

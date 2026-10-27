@@ -13,13 +13,17 @@ class DiagnosticsScreen extends StatelessWidget {
       builder: (context, _) => ListView(
         padding: const EdgeInsets.all(16),
         children: <Widget>[
-          const Text('仅记录本次运行的最近50条错误类别，不记录Cookie、BDUSS、帖子正文、链接或原始响应。重启后清空。'),
+          const Text(
+            '记录本次运行最近50条错误和100条加载耗时；仅含来源、批次、耗时和条数，不记录搜索词、Cookie、正文或链接。重启后清空。',
+          ),
           const SizedBox(height: 12),
           Wrap(
             spacing: 12,
             children: <Widget>[
               OutlinedButton.icon(
-                onPressed: sourceDiagnostics.events.isEmpty
+                onPressed:
+                    sourceDiagnostics.events.isEmpty &&
+                        sourceDiagnostics.loads.isEmpty
                     ? null
                     : () async {
                         await Clipboard.setData(
@@ -35,13 +39,28 @@ class DiagnosticsScreen extends StatelessWidget {
                 label: const Text('复制脱敏诊断'),
               ),
               TextButton(
-                onPressed: sourceDiagnostics.events.isEmpty
+                onPressed:
+                    sourceDiagnostics.events.isEmpty &&
+                        sourceDiagnostics.loads.isEmpty
                     ? null
                     : sourceDiagnostics.clear,
                 child: const Text('清空诊断'),
               ),
             ],
           ),
+          for (final event
+              in sourceDiagnostics.loads
+                  .where((event) => event.phase != 'start')
+                  .take(12))
+            ListTile(
+              dense: true,
+              title: Text(
+                '第 ${event.batch} 批 · ${event.source.label} · ${event.elapsedMilliseconds} ms',
+              ),
+              subtitle: Text(
+                '${event.phase} · ${event.itemCount} 条 · ${event.at.toLocal()}',
+              ),
+            ),
           if (sourceDiagnostics.events.isEmpty)
             const Padding(
               padding: EdgeInsets.all(24),

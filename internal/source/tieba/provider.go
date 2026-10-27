@@ -129,6 +129,7 @@ func (*Provider) ID() domain.SourceID { return domain.SourceTieba }
 func (*Provider) Name() string        { return "百度贴吧" }
 func (*Provider) Capabilities() source.Capability {
 	return source.CapabilityFeed | source.CapabilitySearch | source.CapabilityDetail |
+		source.CapabilityFollow |
 		source.CapabilityHot | source.CapabilityFollowing | source.CapabilityCredentialLogin |
 		browserLoginCapability()
 }
@@ -179,13 +180,44 @@ func (p *Provider) Browse(ctx context.Context, channel source.Channel, cursor st
 		return domain.Page{Notices: append(notices, "贴吧尚未配置常看吧；可搜索吧名、设置 --tieba-forums，或登录后使用已关注贴吧")}, nil
 	}
 	const maxForums = 8
-	if len(forums) > maxForums {
-		forums = forums[:maxForums]
-		notices = append(notices, "为控制请求频率，本次只读取前 8 个贴吧")
+	pageNumber, offset, moreEarlier := forumBatchCursor(cursor)
+	if offset >= len(forums) {
+		offset = 0
 	}
-	page, err := p.feedForums(ctx, forums, cursor, sortType)
+	end := min(offset+maxForums, len(forums))
+	total := len(forums)
+	if len(forums) > maxForums {
+		notices = append(notices, fmt.Sprintf("本批读取第 %d–%d 个贴吧，共 %d 个；继续加载会轮换其余贴吧", offset+1, end, total))
+	}
+	page, err := p.feedForums(ctx, forums[offset:end], strconv.Itoa(pageNumber), sortType)
+	if err == nil {
+		if end < total {
+			page.NextCursor = fmt.Sprintf("forums:%d:%d:%t", pageNumber, end, moreEarlier || page.HasMore)
+			page.HasMore = true
+		} else if page.HasMore || moreEarlier {
+			page.NextCursor = fmt.Sprintf("forums:%d:0:false", pageNumber+1)
+			page.HasMore = true
+		}
+	}
 	page.Notices = append(notices, page.Notices...)
 	return page, err
+}
+
+// A bounded batch keeps every followed forum reachable without increasing the
+// concurrent request budget. The carry bit preserves pagination across batches.
+func forumBatchCursor(cursor string) (page, offset int, more bool) {
+	page = positiveInt(cursor, 1)
+	parts := strings.Split(cursor, ":")
+	if len(parts) != 4 || parts[0] != "forums" {
+		return page, 0, false
+	}
+	page = positiveInt(parts[1], 1)
+	offset, _ = strconv.Atoi(parts[2])
+	if offset < 0 {
+		offset = 0
+	}
+	more = parts[3] == "true"
+	return
 }
 
 func (p *Provider) feedForums(ctx context.Context, forums []string, cursor string, sortType int) (domain.Page, error) {

@@ -11,6 +11,7 @@ import 'design_system.dart';
 import 'device_transfer.dart';
 import 'device_transfer_pending.dart';
 import 'device_transfer_service.dart';
+import 'models.dart';
 
 class DeviceTransferScreen extends StatefulWidget {
   const DeviceTransferScreen({super.key, required this.controller});
@@ -112,6 +113,64 @@ class _DeviceTransferScreenState extends State<DeviceTransferScreen>
 
   Future<void> _startSending() async {
     if (_busy) return;
+    var library = true;
+    var preferences = true;
+    final accounts = <SourceId>{};
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) => AlertDialog(
+          title: const Text('选择迁移内容'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CheckboxListTile(
+                  title: const Text('收藏、稍后阅读、历史与阅读位置'),
+                  value: library,
+                  onChanged: (value) => update(() => library = value!),
+                ),
+                CheckboxListTile(
+                  title: const Text('外观与内容偏好'),
+                  value: preferences,
+                  onChanged: (value) => update(() => preferences = value!),
+                ),
+                for (final source in [
+                  SourceId.xhs,
+                  SourceId.tieba,
+                  SourceId.zhihu,
+                ])
+                  CheckboxListTile(
+                    title: Text('${source.label}登录状态'),
+                    value: accounts.contains(source),
+                    onChanged: (value) => update(() {
+                      if (value!) {
+                        accounts.add(source);
+                      } else {
+                        accounts.remove(source);
+                      }
+                    }),
+                  ),
+                const Text('登录状态仅在勾选后通过本次加密连接传输；离线图片不参与迁移。'),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: library || preferences || accounts.isNotEmpty
+                  ? () => Navigator.pop(context, true)
+                  : null,
+              child: const Text('生成二维码'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (proceed != true || !mounted) return;
     setState(() {
       _busy = true;
       _message = null;
@@ -122,7 +181,11 @@ class _DeviceTransferScreenState extends State<DeviceTransferScreen>
         old.state.removeListener(_senderChanged);
         await old.close();
       }
-      final payload = await _service.createPayload();
+      final payload = await _service.createPayload(
+        includeLibrary: library,
+        includePreferences: preferences,
+        accounts: accounts,
+      );
       final sender = await DeviceTransferSender.start(payload);
       sender.state.addListener(_senderChanged);
       _clock?.cancel();

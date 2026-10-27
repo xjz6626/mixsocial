@@ -73,7 +73,11 @@ List<String> mediaImageCandidates(
   final values = <String>[
     if (quality == MediaImageQuality.original && source == SourceId.xhs)
       xhsOriginalImageUrl(high),
-    if (quality != MediaImageQuality.thumbnail) high,
+    // The website's preview is often only 360px wide. A higher decode limit
+    // cannot recover its detail on a 3x/4x phone display.
+    if (quality != MediaImageQuality.thumbnail || source == SourceId.xhs) high,
+    if (quality != MediaImageQuality.thumbnail || source == SourceId.xhs)
+      ...media.imageUrls.map(normalizeMediaUrl),
     preview,
     if (quality == MediaImageQuality.thumbnail) high,
   ];
@@ -371,11 +375,7 @@ class ProgressiveSourceNetworkImage extends StatelessWidget {
           ) ??
           const SizedBox.shrink();
     }
-    final preview = mediaImageCandidates(
-      media,
-      source,
-      MediaImageQuality.thumbnail,
-    ).firstOrNull;
+    final preview = mediaUri(media.previewImageUrl)?.toString();
     final primary = candidates.first;
     if (preview == null || preview == primary) {
       return SourceNetworkImage(
@@ -408,14 +408,29 @@ class ProgressiveSourceNetworkImage extends StatelessWidget {
         ),
         SourceNetworkImage(
           url: primary,
-          fallbackUrls: candidates.skip(1).toList(),
+          fallbackUrls: candidates
+              .skip(1)
+              .where((url) => url != preview)
+              .toList(),
           source: source,
           width: width,
           height: height,
           fit: fit,
           alignment: alignment,
           loadingBuilder: (_, _, _) => const SizedBox.shrink(),
-          errorBuilder: (_, _, _) => const SizedBox.shrink(),
+          errorBuilder: (_, _, _) => const Align(
+            alignment: Alignment.bottomRight,
+            child: DecoratedBox(
+              decoration: BoxDecoration(color: Colors.black54),
+              child: Padding(
+                padding: EdgeInsets.all(6),
+                child: Text(
+                  '高清加载失败，点按重试',
+                  style: TextStyle(color: Colors.white, fontSize: 12),
+                ),
+              ),
+            ),
+          ),
           filterQuality: filterQuality,
           maxDimension: maxDimension,
           semanticLabel: semanticLabel,

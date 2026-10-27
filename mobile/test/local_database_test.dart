@@ -87,13 +87,17 @@ void main() {
   });
 
   test(
-    'SQLite read later is deduplicated and bounded without losing progress',
+    'SQLite capacity rejects new entries without evicting existing reading progress',
     () async {
       await database.setReadingProgress(_item(0), 0.4);
       await database.setSaved(_item(1), true);
-      for (var index = 0; index < LocalDatabase.readLaterLimit + 2; index++) {
+      for (var index = 0; index < LocalDatabase.readLaterLimit; index++) {
         await database.setReadLater(_item(index), true);
       }
+      await expectLater(
+        database.setReadLater(_item(301), true),
+        throwsFormatException,
+      );
       await database.setReadLater(_item(8).copyWith(title: '更新标题'), true);
 
       final items = await database.readLaterItems();
@@ -101,10 +105,30 @@ void main() {
       expect(items.first.key, _item(8).key);
       expect(items.first.title, '更新标题');
       expect(items.map((item) => item.key).toSet(), hasLength(items.length));
-      expect(await database.isReadLater(_item(0).key), isFalse);
-      expect(await database.isReadLater(_item(1).key), isFalse);
+      expect(await database.isReadLater(_item(0).key), isTrue);
+      expect(await database.isReadLater(_item(1).key), isTrue);
       expect((await database.metadata(_item(0).key)).readingProgress, 0.4);
       expect((await database.savedItems()).single.key, _item(1).key);
+    },
+  );
+
+  test(
+    'saving at capacity fails atomically and preserves all existing favorites',
+    () async {
+      for (var index = 0; index < LocalDatabase.savedLimit; index++) {
+        await database.setSaved(_item(index), true);
+      }
+      await expectLater(
+        database.setSaved(_item(999), true),
+        throwsFormatException,
+      );
+      expect(
+        (await database.savedItems()).map((item) => item.key),
+        contains(_item(0).key),
+      );
+      expect(await database.savedItems(), hasLength(LocalDatabase.savedLimit));
+      await database.setSaved(_item(0).copyWith(title: '仍可更新'), true);
+      expect((await database.savedItems()).first.title, '仍可更新');
     },
   );
 

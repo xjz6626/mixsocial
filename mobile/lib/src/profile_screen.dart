@@ -7,6 +7,7 @@ import 'design_system.dart';
 import 'detail_screen.dart';
 import 'feed_widgets.dart';
 import 'models.dart';
+import 'relationship_actions.dart';
 import 'network_media.dart';
 import 'official_page_screen.dart';
 import 'source_diagnostics.dart';
@@ -66,7 +67,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       fallback: widget.author.following,
       observed: _profile?.following,
     );
-    if (mounted && value != _following) {
+    if (mounted) {
       setState(() => _following = value);
     }
   }
@@ -101,7 +102,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (!mounted || generation != _requestGeneration) return;
       setState(() {
         _profile = page;
-        _items = widget.controller.prepareItems(page.items);
+        _items = page.items;
         _nextCursor = page.nextCursor;
         _hasMore = page.hasMore && page.nextCursor.isNotEmpty;
         _following = widget.controller.isFollowing(
@@ -110,6 +111,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           observed: page.following,
         );
       });
+      unawaited(_refreshFollowing());
     } catch (error) {
       if (mounted && generation == _requestGeneration) {
         setState(() => _error = error);
@@ -144,8 +146,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       );
       if (!mounted || generation != _requestGeneration) return;
       final seen = _items.map((FeedItem item) => item.key).toSet();
-      final additions = widget.controller
-          .prepareItems(page.items)
+      final additions = page.items
           .where((FeedItem item) => seen.add(item.key))
           .toList();
       setState(() {
@@ -177,6 +178,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final loading = _load();
     if (_scrollController.hasClients) _scrollController.jumpTo(0);
     await loading;
+  }
+
+  Future<void> _refreshFollowing() async {
+    final profile = widget.author.ref;
+    if (profile.source == SourceId.xhs || !profile.isIdentifiable) return;
+    try {
+      await widget.controller.readFollowing(profile);
+    } catch (error) {
+      sourceDiagnostics.record(profile.source, '关注状态', error);
+    }
   }
 
   Future<void> _follow() async {
@@ -245,10 +256,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
   @override
   Widget build(BuildContext context) {
     final profile = _profile;
+    final visibleItems = widget.controller.prepareItems(_items);
     return Scaffold(
       appBar: AppBar(
         title: Text(profile?.name ?? widget.author.name),
         actions: <Widget>[
+          if (!widget.isOwnProfile && hasAuthorIdentity(widget.author))
+            IconButton(
+              tooltip: widget.controller.isAuthorBlocked(widget.author.ref)
+                  ? '解除屏蔽作者'
+                  : '屏蔽作者',
+              onPressed: () async {
+                await toggleAuthorBlock(
+                  context,
+                  widget.controller,
+                  widget.author,
+                );
+                if (mounted) setState(() {});
+              },
+              icon: const Icon(Icons.person_off_outlined),
+            ),
           if (widget.author.ref.source == SourceId.tieba)
             IconButton(
               tooltip: '打开官方主页',
@@ -278,11 +305,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     following: _following,
                     working: _working,
                     onFollow:
-                        !widget.isOwnProfile &&
-                            widget.controller.supports(
-                              widget.author.ref.source,
-                              SourceCapability.follow,
-                            )
+                        !widget.isOwnProfile && hasAuthorIdentity(widget.author)
                         ? _follow
                         : null,
                   ),
@@ -329,7 +352,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   compact: true,
                 ),
               )
-            else if (!_loading && _items.isEmpty)
+            else if (!_loading && visibleItems.isEmpty)
               SliverToBoxAdapter(
                 child: AppStateView(
                   icon: Icons.article_outlined,
@@ -344,10 +367,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
                 sliver: SliverList.separated(
-                  itemCount: _items.length,
+                  itemCount: visibleItems.length,
                   separatorBuilder: (_, _) => const SizedBox(height: 10),
                   itemBuilder: (BuildContext context, int index) {
-                    final item = _items[index];
+                    final item = visibleItems[index];
                     return Align(
                       alignment: Alignment.topCenter,
                       child: ConstrainedBox(

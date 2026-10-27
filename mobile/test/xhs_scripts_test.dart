@@ -5,6 +5,58 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mixsocial_mobile/src/xhs_scripts.dart';
 
 void main() {
+  test(
+    'feed thumbnails select the largest default scene, not preview',
+    () async {
+      final result = await _parse(
+        xhsFeedScript,
+        state: {
+          'feed': {
+            'hasMore': false,
+            'feeds': [
+              {
+                'id': 'note-hd',
+                'noteCard': {
+                  'cover': {
+                    'url_pre': 'https://sns-webpic.xhscdn.com/preview',
+                    'info_list': [
+                      {
+                        'image_scene': 'WB_PRV',
+                        'url': 'https://sns-webpic.xhscdn.com/preview',
+                        'width': 360,
+                        'height': 480,
+                      },
+                      {
+                        'image_scene': 'WB_DFT',
+                        'url': 'https://sns-webpic.xhscdn.com/medium',
+                        'width': 720,
+                        'height': 960,
+                      },
+                      {
+                        'image_scene': 'WB_DFT',
+                        'url': 'https://sns-webpic.xhscdn.com/high',
+                        'width': 1440,
+                        'height': 1920,
+                      },
+                    ],
+                  },
+                },
+              },
+            ],
+          },
+        },
+      );
+      final image = (result['items'] as List).single['media'][0];
+      expect(image['url'], endsWith('/high'));
+      expect(image['previewUrl'], endsWith('/preview'));
+      expect(
+        image['imageUrls'],
+        contains('https://sns-webpic.xhscdn.com/medium'),
+      );
+      expect(result['hasMore'], false);
+    },
+  );
+
   test('floor reply parser preserves nested comment pictures', () {
     final script = xhsFloorRepliesScript('note-1', 'comment-1');
 

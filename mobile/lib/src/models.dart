@@ -218,6 +218,7 @@ class ContentRef {
     this.parentId = '',
     this.token = '',
     this.url = '',
+    this.kind = '',
   });
 
   final SourceId source;
@@ -225,6 +226,27 @@ class ContentRef {
   final String parentId;
   final String token;
   final String url;
+  final String kind;
+
+  String get contentKind {
+    if (kind.isNotEmpty) return kind;
+    if (source == SourceId.zhihu) {
+      if (const {'question', 'answer', 'article', 'pin'}.contains(token)) {
+        return token;
+      }
+      final uri = Uri.tryParse(url);
+      if (uri?.host == 'zhuanlan.zhihu.com') return 'article';
+      if (uri?.path.contains('/answer/') ?? false) return 'answer';
+      if (uri?.path.startsWith('/question/') ?? false) return 'question';
+      if (uri?.path.startsWith('/pin/') ?? false) return 'pin';
+      return 'answer';
+    }
+    return source == SourceId.tieba ? 'thread' : 'note';
+  }
+
+  String get legacyKey => '${source.id}:$id';
+  String get key =>
+      source == SourceId.zhihu ? '${source.id}:$contentKind:$id' : legacyKey;
 
   factory ContentRef.fromJson(Map<String, Object?> json) => ContentRef(
     source: SourceId.parse(json['source']),
@@ -232,6 +254,7 @@ class ContentRef {
     parentId: json['parentId']?.toString() ?? '',
     token: json['token']?.toString() ?? '',
     url: json['url']?.toString() ?? '',
+    kind: json['kind']?.toString() ?? '',
   );
 
   Map<String, Object?> toJson() => <String, Object?>{
@@ -240,6 +263,7 @@ class ContentRef {
     if (parentId.isNotEmpty) 'parentId': parentId,
     if (token.isNotEmpty) 'token': token,
     if (url.isNotEmpty) 'url': url,
+    if (source == SourceId.zhihu) 'kind': contentKind,
   };
 }
 
@@ -257,6 +281,12 @@ class ProfileRef {
   final String url;
 
   String get key => '${source.id}:$id';
+
+  /// Anonymous / missing IDs must never group unrelated authors together.
+  bool get isIdentifiable =>
+      source != SourceId.all &&
+      id.trim().isNotEmpty &&
+      !RegExp(r'^0+$').hasMatch(id.trim());
 
   factory ProfileRef.fromJson(Map<String, Object?> json) => ProfileRef(
     source: SourceId.parse(json['source']),
@@ -420,6 +450,7 @@ class MediaItem {
     this.width = 0,
     this.height = 0,
     this.durationMilliseconds = 0,
+    this.imageUrls = const <String>[],
   });
 
   final String kind;
@@ -429,6 +460,7 @@ class MediaItem {
   final int width;
   final int height;
   final int durationMilliseconds;
+  final List<String> imageUrls;
 
   // A video URL is not an image. Render its cover when present and otherwise
   // show the video placeholder/play button instead of feeding MP4 bytes to an
@@ -439,7 +471,7 @@ class MediaItem {
       ? previewUrl
       : url;
   String get fullImageUrl => kind == 'video'
-      ? previewUrl
+      ? (imageUrls.firstOrNull ?? previewUrl)
       : url.isNotEmpty
       ? url
       : previewUrl;
@@ -453,6 +485,7 @@ class MediaItem {
     format: json['format']?.toString() ?? '',
     width: integer(json['width']),
     height: integer(json['height']),
+    imageUrls: listOf(json['imageUrls']).whereType<String>().toList(),
     // Go's time.Duration JSON value is nanoseconds. WebView adapters return
     // durationMilliseconds directly.
     durationMilliseconds: json.containsKey('durationMilliseconds')
@@ -467,6 +500,7 @@ class MediaItem {
     if (format.isNotEmpty) 'format': format,
     if (width != 0) 'width': width,
     if (height != 0) 'height': height,
+    if (imageUrls.isNotEmpty) 'imageUrls': imageUrls,
     if (durationMilliseconds != 0) 'durationMilliseconds': durationMilliseconds,
   };
 }
@@ -483,6 +517,7 @@ class FeedItem {
     this.tags = const <String>[],
     this.liked = false,
     this.favorited = false,
+    this.localSaved = false,
   });
 
   final ContentRef ref;
@@ -495,8 +530,9 @@ class FeedItem {
   final List<String> tags;
   final bool liked;
   final bool favorited;
+  final bool localSaved;
 
-  String get key => '${ref.source.id}:${ref.id}';
+  String get key => ref.key;
 
   String get forumName {
     if (ref.source != SourceId.tieba || tags.isEmpty) return '';
@@ -519,6 +555,7 @@ class FeedItem {
       ).map((Object? value) => value.toString()).toList(),
       liked: json['liked'] == true,
       favorited: json['favorited'] == true,
+      localSaved: json['localSaved'] == true,
     );
   }
 
@@ -535,6 +572,7 @@ class FeedItem {
     if (tags.isNotEmpty) 'tags': tags,
     if (liked) 'liked': true,
     if (favorited) 'favorited': true,
+    if (localSaved) 'localSaved': true,
   };
 
   FeedItem copyWith({
@@ -546,6 +584,7 @@ class FeedItem {
     List<String>? tags,
     bool? liked,
     bool? favorited,
+    bool? localSaved,
   }) => FeedItem(
     ref: ref,
     title: title ?? this.title,
@@ -557,6 +596,7 @@ class FeedItem {
     tags: tags ?? this.tags,
     liked: liked ?? this.liked,
     favorited: favorited ?? this.favorited,
+    localSaved: localSaved ?? this.localSaved,
   );
 }
 
@@ -755,6 +795,12 @@ class FeedDetail {
     this.hasMore = false,
     this.currentPage = 1,
     this.totalPages = 0,
+    this.contentHtml = '',
+    this.answers = const [],
+    this.answersNextCursor = '',
+    this.answersHasMore = false,
+    this.commentsPending = false,
+    this.commentsError = '',
   });
   final FeedItem item;
   final String body;
@@ -762,6 +808,12 @@ class FeedDetail {
   final String nextCursor;
   final bool hasMore;
   final int currentPage;
+  final String contentHtml;
+  final List<FeedItem> answers;
+  final String answersNextCursor;
+  final bool answersHasMore;
+  final bool commentsPending;
+  final String commentsError;
 
   /// Zero means that the server did not expose a total.
   final int totalPages;
@@ -781,6 +833,12 @@ class FeedDetail {
       hasMore: json['hasMore'] == true,
       currentPage: integer(json['currentPage']).clamp(1, 100000),
       totalPages: integer(json['totalPages']).clamp(0, 100000),
+      contentHtml: json['contentHtml']?.toString() ?? '',
+      answers: listOfMaps(json['answers']).map(FeedItem.fromJson).toList(),
+      answersNextCursor: json['answersNextCursor']?.toString() ?? '',
+      answersHasMore: json['answersHasMore'] == true,
+      commentsPending: json['commentsPending'] == true,
+      commentsError: json['commentsError']?.toString() ?? '',
     );
   }
 

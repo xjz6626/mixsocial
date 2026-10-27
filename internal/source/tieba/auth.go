@@ -186,6 +186,10 @@ type formValue struct {
 }
 
 func (p *Provider) postSignedForm(ctx context.Context, endpoint string, form []formValue) ([]byte, error) {
+	return p.postSignedFormFor(ctx, endpoint, form, "贴吧登录")
+}
+
+func (p *Provider) postSignedFormFor(ctx context.Context, endpoint string, form []formValue, operation string) ([]byte, error) {
 	signed := append([]formValue(nil), form...)
 	sort.Slice(signed, func(i, j int) bool {
 		if signed[i].key == signed[j].key {
@@ -211,7 +215,7 @@ func (p *Provider) postSignedForm(ctx context.Context, endpoint string, form []f
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", "mixsocial-tui/0.2")
-	return p.readResponse(req, "贴吧登录")
+	return p.readResponse(req, operation)
 }
 
 func (p *Provider) setSession(session sessionData) error {

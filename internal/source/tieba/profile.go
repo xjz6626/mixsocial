@@ -27,6 +27,7 @@ type ProfilePage struct {
 	Items       []domain.Item     `json:"items"`
 	NextCursor  string            `json:"nextCursor,omitempty"`
 	HasMore     bool              `json:"hasMore"`
+	Following   *bool             `json:"following,omitempty"`
 }
 
 func (p *Provider) Profile(ctx context.Context, ref domain.ProfileRef, cursor string) (ProfilePage, error) {
@@ -45,16 +46,28 @@ func (p *Provider) Profile(ctx context.Context, ref domain.ProfileRef, cursor st
 	data = appendUint(data, 1, uid)
 	data = appendUint(data, 2, 1)
 	data = appendUint(data, 6, uint64(pn))
-	data = appendBytes(data, 9, encodeCommon())
+	session, err := p.sessionSnapshot()
+	if err != nil {
+		return ProfilePage{}, err
+	}
+	common := encodeCommon()
+	common = appendString(common, 10, session.BDUSS)
+	common = appendString(common, 11, session.TBS)
+	common = appendString(common, 30, session.STOKEN)
+	data = appendBytes(data, 9, common)
 	endpoint := p.profileURL
 	if endpoint == "" {
 		endpoint = "https://tiebac.baidu.com/c/u/user/profile?cmd=303012"
 	}
-	body, err := p.postProto(ctx, endpoint, appendBytes(nil, 1, data))
+	body, err := p.postProtoWithSession(ctx, endpoint, appendBytes(nil, 1, data), &session)
 	if err != nil {
 		return ProfilePage{}, err
 	}
-	return decodeProfileResponse(body, ref, pn)
+	page, err := decodeProfileResponse(body, ref, pn)
+	if session.BDUSS == "" {
+		page.Following = nil
+	}
+	return page, err
 }
 
 func decodeProfileResponse(body []byte, ref domain.ProfileRef, page int) (ProfilePage, error) {
@@ -77,12 +90,15 @@ func decodeProfileResponse(body []byte, ref domain.ProfileRef, page int) (Profil
 		return ProfilePage{}, fmt.Errorf("贴吧主页返回的用户与请求不一致")
 	}
 	author, _ := decodeAuthor(firstBytes(data, 1))
+	ref.Token, _, _ = strings.Cut(firstString(user, 5), "?")
 	if username := firstString(user, 3); username != "" {
 		ref.URL = "https://tieba.baidu.com/home/main?un=" + url.QueryEscape(username)
 	}
 	author.Ref = ref
 	result := ProfilePage{Ref: ref, Name: author.Name, Avatar: author.Avatar,
 		Description: firstString(user, 34), Location: firstString(user, 127), Items: []domain.Item{}}
+	following := firstUint(user, 46) != 0
+	result.Following = &following
 	for _, stat := range []struct {
 		name  string
 		field int
@@ -127,7 +143,9 @@ func decodeProfileResponse(body []byte, ref domain.ProfileRef, page int) (Profil
 		item := domain.Item{Ref: domain.Ref{Source: domain.SourceTieba, ID: id, URL: "https://tieba.baidu.com/p/" + id},
 			Title: title, Summary: text, Author: author, Media: media,
 			PublishedAt: unixTime(firstUint(fields, 5)), Stats: domain.Stats{Comments: int64(firstUint(fields, 17))}}
-		if forum := firstString(fields, 6); forum != "" { item.Tags = []string{forum + "吧"} }
+		if forum := firstString(fields, 6); forum != "" {
+			item.Tags = []string{forum + "吧"}
+		}
 		result.Items = append(result.Items, item)
 	}
 	// This endpoint exposes no total-page field. Stop on an empty page; callers

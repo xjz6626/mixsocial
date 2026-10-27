@@ -3,6 +3,22 @@ import 'package:mixsocial_mobile/src/models.dart';
 import 'package:mixsocial_mobile/src/network_media.dart';
 
 void main() {
+  test('XHS video cover also prefers high-quality image candidates', () {
+    const media = MediaItem(
+      kind: 'video',
+      url: 'https://sns-video.xhscdn.com/video.mp4',
+      previewUrl: 'https://sns-webpic.xhscdn.com/preview.jpg',
+      imageUrls: ['https://sns-webpic.xhscdn.com/high.jpg'],
+    );
+    final candidates = mediaImageCandidates(
+      media,
+      SourceId.xhs,
+      MediaImageQuality.thumbnail,
+    );
+    expect(candidates.first, endsWith('/high.jpg'));
+    expect(candidates, isNot(contains(media.url)));
+  });
+
   test('normalizes protocol-relative and escaped media URLs', () {
     expect(
       normalizeMediaUrl('//sns-webpic.xhscdn.com/a.webp?x=1&amp;y=2'),
@@ -72,7 +88,7 @@ void main() {
     );
     expect(
       mediaImageCandidates(media, SourceId.xhs, MediaImageQuality.thumbnail),
-      <String>[media.previewUrl, media.url],
+      <String>[media.url, media.previewUrl],
     );
     expect(
       mediaImageCandidates(media, SourceId.xhs, MediaImageQuality.detail),

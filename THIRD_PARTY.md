@@ -16,7 +16,9 @@
 - Repository: https://github.com/Starry-OvO/aiotieba
 - Revision inspected: `6a32de113ba35dd4da2ec0e76540e79678f9b8d8`
 - License: The Unlicense
-- Usage: 贴吧移动端 protobuf endpoint、表单签名、BDUSS 校验和已关注贴吧字段的互操作性参考，并核对点赞写接口的风险说明。当前 Go wire codec、会话存储和 HTTP 实现为本项目独立实现；Android 贴吧写操作交给百度官方可见页面，不调用该私有写接口。
+- Usage: 贴吧移动端 protobuf endpoint、表单签名、BDUSS 校验和已关注贴吧字段的互操作性参考，并核对点赞写接口的风险说明。当前 Go wire codec、会话存储和 HTTP 实现为本项目独立实现；Android 的贴吧点赞、评论和回复交给百度官方可见页面；作者与贴吧关注关系使用独立实现的签名请求与状态回读。
+
+- Additional relationship protocol revision inspected: `3922a9f1f4643f4652bc4a33f853e8aea29ffe24`（2026-10-26）。核对 `follow_user`、`unfollow_user`、`follow_forum`、`unfollow_forum`、`get_fid`、`Profile` 与 `User.is_friend` 字段；Go 代码独立实现，不引入 Python 运行时。
 
 贴吧全站热榜直接读取百度贴吧公开的 `https://tieba.baidu.com/hottopic/browse/topicList` 响应，没有引入额外第三方库。
 
@@ -49,6 +51,13 @@
 - Source inspected: [`xhs/core.py`](https://github.com/ReaJason/xhs/blob/master/xhs/core.py), `master`，2026-09-08 核对。
 - License: [MIT](https://github.com/ReaJason/xhs/blob/master/LICENSE)
 - Usage: 核对网页点赞/取消赞、收藏/取消收藏、评论/回复、关注/取消关注、评论点赞/取消赞的路径、笔记 ID、用户 ID 与评论目标字段，以及自己的资料/笔记/收藏/点赞列表接口的可行性。Android 的页面请求观察器为本项目独立实现；只确认本次互动对应的 fetch/XHR 服务端结果，并阻止错误目标、反向操作及重复提交，请求及签名仍由登录网页生成。自己的主页入口从网页账号状态读取身份，并复用已有网页分类，不直接调用上述资料接口。没有引入该 Python 客户端或复制其签名实现。
+
+## lzjun567/zhihu-api
+
+- Repository: https://github.com/lzjun567/zhihu-api
+- Revision inspected: `84d15bc7fc6fbf14fe4a170fb18aa0a132c213b3`（2026-10-26）。
+- License: MIT。
+- Usage: 核对 `zhihu/models/user.py` 与 `zhihu/url.py` 中成员 `followers` 路由的 POST/DELETE 关注协议。Go 实现复用本项目已有 HTTP/Cookie/XSRF 客户端，独立加入作者目标校验、当前关系查询、写入后回读及不自动重发行为；未复制 Python 实现或将其作为依赖。
 
 ## QR 与浏览器库
 

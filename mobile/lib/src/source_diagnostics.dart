@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'models.dart';
 
@@ -78,7 +79,69 @@ class DiagnosticEvent {
       '${at.toIso8601String()} ${source.label} $operation ${failure.kind.name}: ${failure.message}';
 }
 
+class LoadTimingEvent {
+  const LoadTimingEvent({
+    required this.batch,
+    required this.source,
+    required this.phase,
+    required this.elapsedMilliseconds,
+    required this.itemCount,
+    required this.at,
+  });
+  final int batch;
+  final SourceId source;
+  final String phase;
+  final int elapsedMilliseconds;
+  final int itemCount;
+  final DateTime at;
+  String get safeText =>
+      '${at.toIso8601String()} 第 $batch 批 ${source.label} $phase · $elapsedMilliseconds ms · $itemCount 条';
+}
+
 class SourceDiagnostics extends ChangeNotifier {
+  int _loadBatch = 0;
+  final List<LoadTimingEvent> _loads = [];
+  List<LoadTimingEvent> get loads => List.unmodifiable(_loads.reversed);
+  int beginLoad(SourceId source) {
+    final batch = ++_loadBatch;
+    recordLoad(batch, source, 'start', Duration.zero);
+    return batch;
+  }
+
+  void recordLoad(
+    int batch,
+    SourceId source,
+    String phase,
+    Duration elapsed, {
+    int itemCount = 0,
+  }) {
+    final safePhase =
+        const {
+          'start',
+          'ready',
+          'failed',
+          'timeout',
+          'complete',
+        }.contains(phase)
+        ? phase
+        : 'failed';
+    final event = LoadTimingEvent(
+      batch: batch,
+      source: source,
+      phase: safePhase,
+      elapsedMilliseconds: elapsed.inMilliseconds,
+      itemCount: itemCount,
+      at: DateTime.now(),
+    );
+    _loads.add(event);
+    if (_loads.length > 100) _loads.removeAt(0);
+    // Local performance diagnostics only: never log query, URL, payload or credentials.
+    debugPrint(
+      '[MixsocialLoad] ${jsonEncode({'batch': batch, 'source': source.id, 'phase': safePhase, 'elapsedMs': event.elapsedMilliseconds, 'items': itemCount})}',
+    );
+    notifyListeners();
+  }
+
   final List<DiagnosticEvent> _events = <DiagnosticEvent>[];
   List<DiagnosticEvent> get events => List.unmodifiable(_events.reversed);
 
@@ -96,9 +159,13 @@ class SourceDiagnostics extends ChangeNotifier {
     notifyListeners();
   }
 
-  String exportText() => events.map((event) => event.safeText).join('\n');
+  String exportText() => [
+    ...loads.map((event) => event.safeText),
+    ...events.map((event) => event.safeText),
+  ].join('\n');
   void clear() {
     _events.clear();
+    _loads.clear();
     notifyListeners();
   }
 }

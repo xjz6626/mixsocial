@@ -51,6 +51,7 @@ func (*Provider) Name() string { return "知乎" }
 
 func (*Provider) Capabilities() source.Capability {
 	return source.CapabilityFeed | source.CapabilitySearch | source.CapabilityDetail |
+		source.CapabilityFollow |
 		source.CapabilityLike | source.CapabilityComment | source.CapabilityReply |
 		source.CapabilityHot | source.CapabilityFollowing |
 		source.CapabilityCredentialLogin | source.CapabilityQRCodeLogin
@@ -181,11 +182,50 @@ func (p *Provider) Search(ctx context.Context, query, cursor string) (domain.Pag
 	return page, nil
 }
 
+// Detail retains comments for terminal consumers. Mobile renders Content first.
 func (p *Provider) Detail(ctx context.Context, ref domain.Ref) (domain.Detail, error) {
+	detail, err := p.Content(ctx, ref)
+	if err != nil {
+		return detail, err
+	}
+	detail.CommentsPending = false
+	comments, commentsErr := p.Comments(ctx, detail.Ref, "")
+	if commentsErr != nil {
+		detail.CommentsError = "评论暂时无法加载，请重试"
+	} else {
+		detail.Comments, detail.NextCursor, detail.HasMore = comments.Comments, comments.NextCursor, comments.HasMore
+	}
+	return detail, nil
+}
+
+// Answers returns independently addressable answers in the site's default order.
+func (p *Provider) Answers(ctx context.Context, ref domain.Ref, cursor string) (domain.Page, error) {
+	if ref.Source != domain.SourceZhihu || ref.ID == "" {
+		return domain.Page{}, fmt.Errorf("知乎问题引用无效")
+	}
+	offset := 0
+	if cursor != "" {
+		parsed, err := strconv.Atoi(cursor)
+		if err != nil || parsed < 0 {
+			return domain.Page{}, fmt.Errorf("知乎回答游标无效")
+		}
+		offset = parsed
+	}
+	response, err := p.api.getMap(ctx, p.api.endpoints.APIV4+"/questions/"+url.PathEscape(ref.ID)+"/answers", url.Values{
+		"include": {"data[*].content,voteup_count,comment_count,created_time,updated_time,author,question"},
+		"offset":  {strconv.Itoa(offset)}, "limit": {strconv.Itoa(p.pageSize)}, "sort_by": {"default"},
+	})
+	if err != nil {
+		return domain.Page{}, err
+	}
+	return answerPage(response, ref.ID, cursor), nil
+}
+
+func (p *Provider) Content(ctx context.Context, ref domain.Ref) (domain.Detail, error) {
 	if ref.Source != domain.SourceZhihu || strings.TrimSpace(ref.ID) == "" {
 		return domain.Detail{}, fmt.Errorf("知乎内容引用无效")
 	}
-	kind := normalizedKind(ref.Token)
+	kind := normalizedKind(firstNonEmpty(ref.Kind, ref.Token))
 	if kind == "" {
 		kind = kindFromURL(ref.URL)
 	}
@@ -200,15 +240,11 @@ func (p *Provider) Detail(ctx context.Context, ref domain.Ref) (domain.Detail, e
 	detail := detailFromTarget(raw)
 	detail.Ref = ref
 	detail.Ref.Token = kind
+	detail.Ref.Kind = kind
 	if detail.Ref.URL == "" {
 		detail.Ref.URL = contentURL(kind, ref.ID, ref.ParentID)
 	}
-	comments, commentsErr := p.fetchComments(ctx, kind, ref.ID, "")
-	if commentsErr == nil {
-		detail.Comments = comments.Comments
-		detail.NextCursor = comments.NextCursor
-		detail.HasMore = comments.HasMore
-	}
+	detail.CommentsPending = true
 	if detail.Title == "" {
 		detail.Title = ref.ID
 	}
@@ -245,6 +281,7 @@ func (p *Provider) fetchContent(ctx context.Context, kind, id string) (map[strin
 		}
 		question["type"] = "question"
 		question["top_answers"] = answers
+		question["answer_paging"] = response["paging"]
 		return question, nil
 	default:
 		return nil, fmt.Errorf("暂不支持知乎内容类型 %q", kind)
@@ -270,7 +307,7 @@ func (p *Provider) Comments(ctx context.Context, ref domain.Ref, cursor string) 
 	if ref.Source != domain.SourceZhihu || strings.TrimSpace(ref.ID) == "" {
 		return domain.CommentPage{}, fmt.Errorf("知乎内容引用无效")
 	}
-	kind := normalizedKind(ref.Token)
+	kind := normalizedKind(firstNonEmpty(ref.Kind, ref.Token))
 	if kind == "" {
 		kind = kindFromURL(ref.URL)
 	}
@@ -281,7 +318,7 @@ func (p *Provider) Comments(ctx context.Context, ref domain.Ref, cursor string) 
 }
 
 func (p *Provider) Like(ctx context.Context, ref domain.Ref, value bool) error {
-	kind := normalizedKind(ref.Token)
+	kind := normalizedKind(firstNonEmpty(ref.Kind, ref.Token))
 	if kind == "question" || kind == "" {
 		return fmt.Errorf("知乎问题使用关注操作，不支持点赞")
 	}
@@ -343,7 +380,7 @@ func (p *Provider) Reply(ctx context.Context, ref domain.Ref, comment domain.Ref
 }
 
 func (p *Provider) writeComment(ctx context.Context, ref domain.Ref, replyID, body string) error {
-	kind := normalizedKind(ref.Token)
+	kind := normalizedKind(firstNonEmpty(ref.Kind, ref.Token))
 	if kind == "" || ref.ID == "" {
 		return fmt.Errorf("知乎评论目标无效")
 	}

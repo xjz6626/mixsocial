@@ -8,7 +8,13 @@ import 'models.dart';
 import 'source.dart';
 import 'source_diagnostics.dart';
 
-class ZhihuSource implements FeedSource, ContentInteractor, ThreadPageReader {
+class ZhihuSource
+    implements
+        FeedSource,
+        ContentInteractor,
+        ThreadPageReader,
+        RelationshipInteractor,
+        RelationshipStateReader {
   ZhihuSource._(this._secureStorage, {this.enabled = true});
 
   static const _credentialKey = 'zhihu.cookie';
@@ -72,6 +78,7 @@ class ZhihuSource implements FeedSource, ContentInteractor, ThreadPageReader {
     SourceCapability.hot,
     SourceCapability.followingFeed,
     SourceCapability.login,
+    SourceCapability.follow,
   };
 
   @override
@@ -108,7 +115,10 @@ class ZhihuSource implements FeedSource, ContentInteractor, ThreadPageReader {
     await _startup;
     if (cursor.isEmpty) return detail(ref);
     final page = FeedCommentPage.decode(
-      await MixsocialCore.zhihuComments(jsonEncode(ref.toJson()), cursor),
+      await MixsocialCore.zhihuComments(
+        jsonEncode(ref.toJson()),
+        cursor == 'initial-comments' ? '' : cursor,
+      ),
       source: SourceId.zhihu,
     );
     return FeedDetail(
@@ -129,11 +139,45 @@ class ZhihuSource implements FeedSource, ContentInteractor, ThreadPageReader {
     );
   }
 
+  Future<FeedPage> answers(ContentRef ref, {String cursor = ''}) async {
+    _validateRef(ref);
+    await _startup;
+    return FeedPage.decode(
+      await MixsocialCore.zhihuAnswers(jsonEncode(ref.toJson()), cursor),
+    );
+  }
+
   @override
   Future<void> like(ContentRef ref, bool value) async {
     _validateRef(ref);
     await _startup;
     await MixsocialCore.likeZhihu(jsonEncode(ref.toJson()), value);
+  }
+
+  @override
+  Future<void> follow(ProfileRef profile, bool value) async {
+    _requireEnabled();
+    if (profile.source != SourceId.zhihu || !profile.isIdentifiable) {
+      throw ArgumentError('无效的知乎作者引用');
+    }
+    await _startup;
+    await MixsocialCore.followZhihu(jsonEncode(profile.toJson()), value);
+  }
+
+  @override
+  Future<bool> following(ProfileRef profile) async {
+    _requireEnabled();
+    if (profile.source != SourceId.zhihu || !profile.isIdentifiable) {
+      throw ArgumentError('无效的知乎作者引用');
+    }
+    await _startup;
+    final value = mapOf(
+      jsonDecode(
+        await MixsocialCore.followingZhihu(jsonEncode(profile.toJson())),
+      ),
+    )['following'];
+    if (value is! bool) throw StateError('知乎未返回关注状态，请刷新核对');
+    return value;
   }
 
   @override
@@ -264,6 +308,59 @@ class ZhihuSource implements FeedSource, ContentInteractor, ThreadPageReader {
     await MixsocialCore.clearZhihuCredential();
     _sessionStatus = const TiebaSessionStatus(TiebaSessionState.signedOut);
     await _secureStorage.delete(key: _credentialKey);
+  }
+
+  Future<WebViewController> authorInteractionController(ProfileRef ref) async {
+    _requireEnabled();
+    if (ref.source != SourceId.zhihu || ref.id.trim().isEmpty) {
+      throw ArgumentError('无效的知乎作者引用');
+    }
+    await _startup;
+    final credential = await _secureStorage.read(key: _credentialKey);
+    final cookies = WebViewCookieManager();
+    for (final part in (credential ?? '').split(';')) {
+      final separator = part.indexOf('=');
+      if (separator <= 0) continue;
+      final name = part.substring(0, separator).trim();
+      final value = part.substring(separator + 1).trim();
+      if (name.isEmpty || value.isEmpty) continue;
+      await cookies.setCookie(
+        WebViewCookie(
+          name: name,
+          value: value,
+          domain: '.zhihu.com',
+          path: '/',
+        ),
+      );
+    }
+    final supplied = Uri.tryParse(ref.url);
+    final uri =
+        supplied != null &&
+            supplied.host == 'www.zhihu.com' &&
+            supplied.userInfo.isEmpty &&
+            supplied.path.startsWith('/people/')
+        ? supplied.replace(scheme: 'https')
+        : Uri.https('www.zhihu.com').replace(
+            pathSegments: ['people', ref.token.isNotEmpty ? ref.token : ref.id],
+          );
+    final controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onNavigationRequest: (request) {
+            final next = Uri.tryParse(request.url);
+            return next != null &&
+                    next.scheme == 'https' &&
+                    next.userInfo.isEmpty &&
+                    (next.host == 'zhihu.com' ||
+                        next.host.endsWith('.zhihu.com'))
+                ? NavigationDecision.navigate
+                : NavigationDecision.prevent;
+          },
+        ),
+      );
+    await controller.loadRequest(uri);
+    return controller;
   }
 
   void _validateRef(ContentRef ref) {

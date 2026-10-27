@@ -161,7 +161,7 @@ void main() {
     expect(await controller.favorite(thread, true), isNull);
     expect(controller.isSaved(thread), isTrue);
     expect(
-      controller.prepareItems(<FeedItem>[thread]).single.favorited,
+      controller.prepareItems(<FeedItem>[thread]).single.localSaved,
       isTrue,
     );
   });

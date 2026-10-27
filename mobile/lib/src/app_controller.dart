@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import 'content_filters.dart';
@@ -29,12 +31,16 @@ class MixsocialController extends ChangeNotifier {
     required this.tieba,
     ZhihuSource? zhihu,
     required this.settings,
+    this.refreshWaitLimit = const Duration(seconds: 2),
+    this.initialWaitLimit = const Duration(seconds: 4),
   }) : zhihu = zhihu ?? ZhihuSource.unavailable();
 
   final XhsWebSource xhs;
   final TiebaSource tieba;
   final ZhihuSource zhihu;
   final LocalSettings settings;
+  final Duration refreshWaitLimit;
+  final Duration initialWaitLimit;
 
   SourceId source = SourceId.all;
   FeedChannel channel = FeedChannel.recommend;
@@ -51,18 +57,156 @@ class MixsocialController extends ChangeNotifier {
       ValueNotifier<AppThemePreference>(AppThemePreference.system);
   final ValueNotifier<SearchNavigationRequest?> searchNavigationNotifier =
       ValueNotifier<SearchNavigationRequest?>(null);
+  Map<SourceId, int> sourceWeights = {};
+  bool unreadFirst = false;
+  Set<String> _readKeys = {};
   ContentFilters _filters = const ContentFilters();
+  List<Author> _blockedAuthors = <Author>[];
   Set<String> _savedKeys = <String>{};
   Set<String> _followingProfiles = <String>{};
   final Map<String, bool> _confirmedFollowing = <String, bool>{};
+  final Set<String> _pendingFollows = {};
+  final Map<SourceId, int> _followAccountGeneration = {};
+  final Map<String, int> _relationshipReadVersions = {};
+  final Map<String, bool> _confirmedForums = {};
   Map<SourceId, String> _nextCursors = <SourceId, String>{};
   Set<SourceId> _moreSources = <SourceId>{};
   int _requestVersion = 0;
   int _searchNavigationVersion = 0;
+  final Map<String, _FeedSession> _sessions = {};
+  String get _filterKey => _sessionFilters.key;
+  XhsSearchFilters _sessionFilters = const XhsSearchFilters();
+  String? _homeSession;
+  String? _searchSession;
+  SourceId _homeSource = SourceId.all;
+  FeedChannel _homeChannel = FeedChannel.recommend;
+
+  String get sessionKey => jsonEncode([
+    source.id,
+    channel.id,
+    searchQuery,
+    searchQuery.isEmpty ? '' : _filterKey,
+  ]);
+
+  void _rememberSession() {
+    if (items.isEmpty) return;
+    final key = sessionKey;
+    _sessions.remove(key);
+    _sessions[key] = _FeedSession(
+      source,
+      channel,
+      searchQuery,
+      layout,
+      List.of(items),
+      List.of(notices),
+      Map.of(_nextCursors),
+      Set.of(_moreSources),
+      paginationError,
+      _sessionFilters,
+    );
+    while (_sessions.length > 16) {
+      _sessions.remove(_sessions.keys.first);
+    }
+  }
+
+  bool _restoreSession(String key) {
+    final saved = _sessions[key];
+    if (saved == null) return false;
+    _invalidateContent(clearItems: true);
+    source = saved.source;
+    channel = saved.channel;
+    searchQuery = saved.query;
+    layout = saved.layout;
+    items = prepareItems(saved.items);
+    notices = saved.notices;
+    _nextCursors = Map.of(saved.cursors);
+    _moreSources = Set.of(saved.more);
+    paginationError = saved.paginationError;
+    if (saved.query.isNotEmpty) {
+      _sessionFilters = saved.filters;
+      xhs.setSearchFilters(saved.filters);
+    }
+    notifyListeners();
+    return true;
+  }
+
+  void enterSearch() {
+    _rememberSession();
+    _homeSession = sessionKey;
+    _homeSource = source;
+    _homeChannel = channel;
+    if (_searchSession != null && _restoreSession(_searchSession!)) return;
+    _invalidateContent(clearItems: true);
+    searchQuery = '';
+    notifyListeners();
+  }
+
+  final Set<SourceId> sourceLoading = {};
+  final Map<SourceId, String> sourceErrors = {};
+
+  List<FeedSource> _selectedSources(SourceId id) => switch (id) {
+    SourceId.xhs => [xhs],
+    SourceId.tieba => [tieba],
+    SourceId.zhihu => [zhihu],
+    SourceId.all => [tieba, xhs, if (zhihu.enabled) zhihu],
+  };
+
+  Future<void> retrySource(SourceId id) async {
+    if (loading || sourceLoading.contains(id)) return;
+    final version = _requestVersion;
+    sourceLoading.add(id);
+    sourceErrors.remove(id);
+    notifyListeners();
+    try {
+      final target = _source(id);
+      final page =
+          await (searchQuery.isEmpty
+                  ? target.browse(channel)
+                  : target.search(searchQuery))
+              .timeout(refreshWaitLimit);
+      if (version != _requestVersion) return;
+      final seen = items.map((item) => item.key).toSet();
+      items = [
+        ...items,
+        ...prepareItems(page.items.where((item) => seen.add(item.key))),
+      ];
+      _recordPagination([_SourcePage(id, page)]);
+      error = null;
+    } catch (failure) {
+      if (version == _requestVersion) {
+        sourceErrors[id] = _readFailure(failure, refreshWaitLimit);
+      }
+    } finally {
+      if (version == _requestVersion) {
+        sourceLoading.remove(id);
+        notifyListeners();
+      }
+    }
+  }
 
   bool get hasMore => _moreSources.isNotEmpty;
+
+  Future<void> accountChanged(SourceId id) async {
+    _requestVersion++;
+    _followAccountGeneration[id] = (_followAccountGeneration[id] ?? 0) + 1;
+    if (id == SourceId.tieba) _confirmedForums.clear();
+    _confirmedFollowing.removeWhere((key, _) => key.startsWith('${id.id}:'));
+    _followingProfiles.removeWhere((key) => key.startsWith('${id.id}:'));
+    _sessions.removeWhere(
+      (_, state) => state.source == id || state.source == SourceId.all,
+    );
+    items = items.where((item) => item.ref.source != id).toList();
+    _nextCursors.remove(id);
+    _moreSources.remove(id);
+    loading = false;
+    loadingMore = false;
+    notifyListeners();
+    await settings.clearAccountState(id);
+  }
+
   Set<String> get blockedForums =>
       Set<String>.unmodifiable(_filters.blockedForums);
+  List<Author> get blockedAuthors => List<Author>.unmodifiable(_blockedAuthors);
   Set<String> get blockedKeywords =>
       Set<String>.unmodifiable(_filters.blockedKeywords);
   bool get hideVideos => _filters.hideVideos;
@@ -96,12 +240,17 @@ class MixsocialController extends ChangeNotifier {
       controller.settings.savedItems(),
       controller.settings.followingProfiles(),
       controller.settings.feedCache(SourceId.all, FeedChannel.recommend),
+      controller.settings.blockedAuthors(),
+      controller.settings.confirmedFollowing(),
     ]);
     controller.layout = restored[0] as FeedLayout;
     controller.density = restored[1] as FeedDensity;
     controller.themePreferenceNotifier.value =
         restored[2] as AppThemePreference;
     controller._filters = ContentFilters(
+      blockedProfiles: (restored[10] as List<Author>)
+          .map((author) => author.ref.key)
+          .toSet(),
       blockedForums: restored[3] as Set<String>,
       blockedKeywords: restored[4] as Set<String>,
       hideVideos: restored[5] as bool,
@@ -111,20 +260,46 @@ class MixsocialController extends ChangeNotifier {
         .map((FeedItem item) => item.key)
         .toSet();
     controller._followingProfiles = restored[8] as Set<String>;
+    controller._blockedAuthors = restored[10] as List<Author>;
+    controller._confirmedFollowing.addAll(restored[11] as Map<String, bool>);
     final cached = restored[9] as List<FeedItem>;
     controller.items = controller.prepareItems(cached);
     if (controller.items.isNotEmpty) {
       controller.notices = const <String>['已恢复上次内容，正在后台更新'];
     }
+    await controller._loadMixPreferences();
     return controller;
   }
 
-  Future<void> manualRefresh() =>
-      refresh(clearItems: true, restoreCacheOnFailure: false);
+  Future<void> _loadMixPreferences() async {
+    sourceWeights = await settings.sourceWeights();
+    unreadFirst = await settings.unreadFirst();
+    _readKeys = (await settings.historyItems()).map((item) => item.key).toSet();
+  }
+
+  Future<void> setSourceWeight(SourceId id, int value) async {
+    await settings.setSourceWeight(id, value);
+    sourceWeights[id] = value.clamp(1, 3);
+    notifyListeners();
+  }
+
+  Future<void> setUnreadFirst(bool value) async {
+    await settings.setUnreadFirst(value);
+    unreadFirst = value;
+    _readKeys = (await settings.historyItems()).map((item) => item.key).toSet();
+    notifyListeners();
+  }
+
+  Future<void> manualRefresh() => refresh(
+    clearItems: true,
+    restoreCacheOnFailure: false,
+    waitLimit: refreshWaitLimit,
+  );
 
   Future<void> refresh({
     bool clearItems = false,
     bool restoreCacheOnFailure = true,
+    Duration? waitLimit,
   }) async {
     final requestVersion = ++_requestVersion;
     final selectedSource = source;
@@ -133,6 +308,10 @@ class MixsocialController extends ChangeNotifier {
     final previousCursors = Map<SourceId, String>.of(_nextCursors);
     final previousMoreSources = Set<SourceId>.of(_moreSources);
     final previousItems = items;
+    sourceErrors.clear();
+    sourceLoading
+      ..clear()
+      ..addAll(_selectedSources(selectedSource).map((s) => s.id));
     loading = true;
     loadingMore = false;
     error = null;
@@ -149,6 +328,18 @@ class MixsocialController extends ChangeNotifier {
         selectedSource: selectedSource,
         selectedChannel: selectedChannel,
         query: query,
+        waitLimit: waitLimit ?? initialWaitLimit,
+        onPage: (result) {
+          if (requestVersion != _requestVersion) return;
+          sourceLoading.remove(result.source);
+          notifyListeners();
+        },
+        onFailure: (id, message) {
+          if (requestVersion != _requestVersion) return;
+          sourceLoading.remove(id);
+          sourceErrors[id] = message;
+          notifyListeners();
+        },
       );
       if (requestVersion != _requestVersion) return;
       final pagesBySource = <SourceId, List<FeedItem>>{
@@ -168,7 +359,6 @@ class MixsocialController extends ChangeNotifier {
       items = prepareItems(merged);
       notices = <String>[
         ...batch.pages.expand((_SourcePage result) => result.page.notices),
-        ...batch.failures,
       ];
       _recordPagination(batch.pages);
       if (!clearItems) {
@@ -222,11 +412,12 @@ class MixsocialController extends ChangeNotifier {
 
   Future<void> loadMore() async {
     if (loading || loadingMore || _moreSources.isEmpty) return;
-    final requestVersion = ++_requestVersion;
+    final requestedSources = _moreSources.difference(sourceLoading);
+    if (requestedSources.isEmpty) return;
+    final requestVersion = _requestVersion;
     final selectedSource = source;
     final selectedChannel = channel;
     final query = searchQuery;
-    final requestedSources = Set<SourceId>.of(_moreSources);
     final cursors = Map<SourceId, String>.of(_nextCursors);
     loadingMore = true;
     paginationError = null;
@@ -238,6 +429,7 @@ class MixsocialController extends ChangeNotifier {
         query: query,
         cursors: cursors,
         onlySources: requestedSources,
+        waitLimit: refreshWaitLimit,
       );
       if (requestVersion != _requestVersion) return;
 
@@ -249,11 +441,14 @@ class MixsocialController extends ChangeNotifier {
             .where((FeedItem item) => existing.add(_itemKey(item)))
             .toList();
         additionsBySource.add(additions);
-        if (additions.isEmpty) {
+        if (additions.isEmpty && !result.page.hasMore) {
           _moreSources.remove(result.source);
           _nextCursors.remove(result.source);
         } else {
           pagesWithAdditions.add(result);
+          if (additions.isEmpty) {
+            paginationError = '${result.source.label}暂未返回新内容，请点击重试继续加载';
+          }
         }
       }
       items = <FeedItem>[
@@ -282,45 +477,60 @@ class MixsocialController extends ChangeNotifier {
     }
   }
 
+  String _readFailure(Object error, Duration limit) => error is TimeoutException
+      ? '读取超时，点按重试（等待上限 ${limit.inMilliseconds / 1000} 秒）'
+      : SourceFailure.from(error).message;
+
   Future<_PageBatch> _loadPages({
     required SourceId selectedSource,
     required FeedChannel selectedChannel,
     required String query,
     Map<SourceId, String> cursors = const <SourceId, String>{},
     Set<SourceId>? onlySources,
+    required Duration waitLimit,
+    void Function(_SourcePage)? onPage,
+    void Function(SourceId, String)? onFailure,
   }) async {
-    final sources =
-        switch (selectedSource) {
-              SourceId.xhs => <FeedSource>[xhs],
-              SourceId.tieba => <FeedSource>[tieba],
-              SourceId.zhihu => <FeedSource>[zhihu],
-              SourceId.all => <FeedSource>[
-                tieba,
-                xhs,
-                if (zhihu.enabled) zhihu,
-              ],
-            }
-            .where((FeedSource item) => onlySources?.contains(item.id) ?? true)
-            .toList();
+    final sources = _selectedSources(
+      selectedSource,
+    ).where((item) => onlySources?.contains(item.id) ?? true).toList();
     if (sources.isEmpty) {
       return const _PageBatch(<_SourcePage>[], <String>[], <SourceId>{});
     }
 
+    final batchId = sourceDiagnostics.beginLoad(selectedSource);
+    final batchClock = Stopwatch()..start();
     final results = await Future.wait<_PageResult>(
       sources.map((FeedSource item) async {
+        final sourceClock = Stopwatch()..start();
         try {
           final cursor = cursors[item.id] ?? '';
-          final page = query.isEmpty
-              ? await item.browse(selectedChannel, cursor: cursor)
-              : await item.search(query, cursor: cursor);
-          return _PageResult(_SourcePage(item.id, page), null);
-        } catch (error) {
-          sourceDiagnostics.record(item.id, '读取内容', error);
-          return _PageResult(
-            null,
-            '${item.id.label}：${SourceFailure.from(error).message}',
+          final page =
+              await (query.isEmpty
+                      ? item.browse(selectedChannel, cursor: cursor)
+                      : item.search(query, cursor: cursor))
+                  .timeout(waitLimit);
+          sourceDiagnostics.recordLoad(
+            batchId,
             item.id,
+            'ready',
+            sourceClock.elapsed,
+            itemCount: page.items.length,
           );
+          final result = _SourcePage(item.id, page);
+          onPage?.call(result);
+          return _PageResult(result, null);
+        } catch (error) {
+          sourceDiagnostics.recordLoad(
+            batchId,
+            item.id,
+            error is TimeoutException ? 'timeout' : 'failed',
+            sourceClock.elapsed,
+          );
+          sourceDiagnostics.record(item.id, '读取内容', error);
+          final message = _readFailure(error, waitLimit);
+          onFailure?.call(item.id, message);
+          return _PageResult(null, '${item.id.label}：$message', item.id);
         }
       }),
     );
@@ -332,6 +542,13 @@ class MixsocialController extends ChangeNotifier {
         .where((result) => result.error != null)
         .map((result) => result.error!)
         .toList();
+    sourceDiagnostics.recordLoad(
+      batchId,
+      selectedSource,
+      'complete',
+      batchClock.elapsed,
+      itemCount: pages.fold(0, (count, page) => count + page.page.items.length),
+    );
     if (pages.isEmpty) throw _PageLoadFailure(failures.join('\n'));
     return _PageBatch(
       pages,
@@ -348,6 +565,7 @@ class MixsocialController extends ChangeNotifier {
     bool preserveSearch = false,
   }) async {
     if (source == value) return;
+    _rememberSession();
     _invalidateContent(clearItems: true);
     source = value;
     if (!preserveSearch) searchQuery = '';
@@ -357,15 +575,18 @@ class MixsocialController extends ChangeNotifier {
     layout = selectedLayout;
     notifyListeners();
     if (preserveSearch && searchQuery.isEmpty) return;
+    if (_restoreSession(sessionKey)) return;
     await refresh(clearItems: true);
   }
 
   Future<void> selectChannel(FeedChannel value) async {
     if (channel == value && searchQuery.isEmpty) return;
+    _rememberSession();
     _invalidateContent(clearItems: true);
     channel = value;
     searchQuery = '';
     notifyListeners();
+    if (_restoreSession(sessionKey)) return;
     await refresh(clearItems: true);
   }
 
@@ -379,9 +600,11 @@ class MixsocialController extends ChangeNotifier {
 
   Future<void> search(String value) async {
     final query = value.trim();
+    _rememberSession();
     _invalidateContent(clearItems: true);
     searchQuery = query;
     notifyListeners();
+    if (query.isNotEmpty && _restoreSession(sessionKey)) return;
     if (query.isNotEmpty) await refresh(clearItems: true);
   }
 
@@ -397,18 +620,26 @@ class MixsocialController extends ChangeNotifier {
 
   Future<void> setXhsSearchFilters(XhsSearchFilters value) async {
     if (xhs.searchFilters.key == value.key) return;
+    _rememberSession();
+    _sessionFilters = value;
     xhs.setSearchFilters(value);
     notifyListeners();
     if (searchQuery.isNotEmpty &&
         (source == SourceId.xhs || source == SourceId.all)) {
+      if (_restoreSession(sessionKey)) return;
       await refresh(clearItems: true);
     }
   }
 
   Future<void> restoreFeed() async {
+    _rememberSession();
+    if (searchQuery.isNotEmpty) _searchSession = sessionKey;
+    if (_homeSession != null && _restoreSession(_homeSession!)) return;
     if (searchQuery.isEmpty && items.isNotEmpty) return;
     _invalidateContent(clearItems: true);
     searchQuery = '';
+    source = _homeSource;
+    channel = _homeChannel;
     notifyListeners();
     await refresh(clearItems: true);
   }
@@ -444,6 +675,80 @@ class MixsocialController extends ChangeNotifier {
 
   Future<List<String>> followingForums() => tieba.followingForums();
 
+  bool? confirmedForumFollowing(String forum) =>
+      _confirmedForums[normalizeForumName(forum)];
+
+  Future<bool> forumFollowing(String forum) async {
+    final name = normalizeForumName(forum);
+    if (name.isEmpty) throw ArgumentError('贴吧名称不能为空');
+    final key = 'forum:$name';
+    if (_pendingFollows.contains(key)) {
+      final known = _confirmedForums[name];
+      if (known != null) return known;
+      throw StateError('正在更新关注状态，请稍候');
+    }
+    final version = (_relationshipReadVersions[key] ?? 0) + 1;
+    _relationshipReadVersions[key] = version;
+    final account = _followAccountGeneration[SourceId.tieba] ?? 0;
+    final value = await tieba.forumFollowing(name);
+    if (account != (_followAccountGeneration[SourceId.tieba] ?? 0)) {
+      throw StateError('账号已切换，请重新读取关注状态');
+    }
+    if (version == _relationshipReadVersions[key] &&
+        !_pendingFollows.contains(key)) {
+      _confirmedForums[name] = value;
+      notifyListeners();
+    }
+    return _confirmedForums[name] ?? value;
+  }
+
+  Future<void> followForum(String forum, bool value) async {
+    final name = normalizeForumName(forum);
+    if (name.isEmpty) throw ArgumentError('贴吧名称不能为空');
+    final key = 'forum:$name';
+    if (!_pendingFollows.add(key)) throw StateError('正在更新关注状态，请稍候');
+    _relationshipReadVersions[key] = (_relationshipReadVersions[key] ?? 0) + 1;
+    final account = _followAccountGeneration[SourceId.tieba] ?? 0;
+    try {
+      await tieba.followForum(name, value);
+      if (account != (_followAccountGeneration[SourceId.tieba] ?? 0)) {
+        throw StateError('账号已切换，请重新读取关注状态');
+      }
+      _confirmedForums[name] = value;
+      notifyListeners();
+    } finally {
+      _pendingFollows.remove(key);
+    }
+  }
+
+  Future<bool> readFollowing(
+    ProfileRef profile, {
+    bool fallback = false,
+  }) async {
+    if (!profile.isIdentifiable) throw ArgumentError('无法识别该作者');
+    final target = _source(profile.source);
+    if (target is! RelationshipStateReader ||
+        _pendingFollows.contains(profile.key)) {
+      return isFollowing(profile, fallback: fallback);
+    }
+    final version = (_relationshipReadVersions[profile.key] ?? 0) + 1;
+    _relationshipReadVersions[profile.key] = version;
+    final account = _followAccountGeneration[profile.source] ?? 0;
+    final value = await (target as RelationshipStateReader).following(profile);
+    if (account != (_followAccountGeneration[profile.source] ?? 0)) {
+      throw StateError('账号已切换，请重新读取关注状态');
+    }
+    if (version == _relationshipReadVersions[profile.key] &&
+        !_pendingFollows.contains(profile.key)) {
+      _confirmedFollowing[profile.key] = value;
+      value
+          ? _followingProfiles.add(profile.key)
+          : _followingProfiles.remove(profile.key);
+      notifyListeners();
+    }
+    return isFollowing(profile, fallback: value);
+  }
+
   Future<ProfilePage> profile(
     ProfileRef profile, {
     ProfileSection section = ProfileSection.notes,
@@ -478,31 +783,46 @@ class MixsocialController extends ChangeNotifier {
       id != SourceId.all && _source(id).capabilities.contains(capability);
 
   Future<String?> follow(ProfileRef profile, bool value) async {
-    final target = _source(profile.source);
-    if (target is! RelationshipInteractor) {
-      throw StateError('${profile.source.label}暂不支持关注用户');
+    if (!profile.isIdentifiable) throw ArgumentError('无法识别该作者');
+    if (!_pendingFollows.add(profile.key)) {
+      throw StateError('正在更新关注状态，请稍候');
     }
-    await (target as RelationshipInteractor).follow(profile, value);
-    // A platform-confirmed cancellation must override stale author snapshots,
-    // including snapshots restored from the local feed cache.
-    _confirmedFollowing[profile.key] = value;
-    value
-        ? _followingProfiles.add(profile.key)
-        : _followingProfiles.remove(profile.key);
-    items = items
-        .map(
-          (FeedItem item) => item.author.ref.key == profile.key
-              ? item.copyWith(author: item.author.copyWith(following: value))
-              : item,
-        )
-        .toList();
-    notifyListeners();
+    _relationshipReadVersions[profile.key] =
+        (_relationshipReadVersions[profile.key] ?? 0) + 1;
+    final accountGeneration = _followAccountGeneration[profile.source] ?? 0;
     try {
-      await settings.setFollowing(profile, value);
-    } catch (failure) {
-      return '${profile.source.label}${value ? '已关注' : '已取消关注'}，但本地记录保存失败：${safeLocalMessage(failure)}';
+      final target = _source(profile.source);
+      if (target is! RelationshipInteractor) {
+        throw StateError('${profile.source.label}暂不支持关注用户');
+      }
+      await (target as RelationshipInteractor).follow(profile, value);
+      if ((_followAccountGeneration[profile.source] ?? 0) !=
+          accountGeneration) {
+        throw StateError('账号已切换，请在原账号确认关注状态');
+      }
+      // A platform-confirmed cancellation must override stale author snapshots,
+      // including snapshots restored from the local feed cache.
+      _confirmedFollowing[profile.key] = value;
+      value
+          ? _followingProfiles.add(profile.key)
+          : _followingProfiles.remove(profile.key);
+      items = items
+          .map(
+            (FeedItem item) => item.author.ref.key == profile.key
+                ? item.copyWith(author: item.author.copyWith(following: value))
+                : item,
+          )
+          .toList();
+      notifyListeners();
+      try {
+        await settings.setFollowing(profile, value);
+      } catch (failure) {
+        return '${profile.source.label}${value ? '已关注' : '已取消关注'}，但本地记录保存失败：${safeLocalMessage(failure)}';
+      }
+      return null;
+    } finally {
+      _pendingFollows.remove(profile.key);
     }
-    return null;
   }
 
   bool isFollowing(
@@ -516,6 +836,22 @@ class MixsocialController extends ChangeNotifier {
 
   bool isForumBlocked(String forum) =>
       _filters.blockedForums.contains(normalizeForumName(forum));
+
+  bool isAuthorBlocked(ProfileRef profile) =>
+      _filters.blockedProfiles.contains(profile.key);
+
+  bool isItemBlocked(FeedItem item) => _filters.blocks(item);
+
+  Future<void> setAuthorBlocked(Author author, bool value) async {
+    await settings.setAuthorBlocked(author, value);
+    _blockedAuthors = await settings.blockedAuthors();
+    _filters = _filters.copyWith(
+      blockedProfiles: _blockedAuthors.map((author) => author.ref.key).toSet(),
+    );
+    items = prepareItems(items);
+    notifyListeners();
+    if (!value) await refresh(clearItems: true);
+  }
 
   Future<void> setForumBlocked(String forum, bool value) async {
     final normalized = normalizeForumName(forum);
@@ -573,10 +909,13 @@ class MixsocialController extends ChangeNotifier {
 
   /// Reloads preferences written by a device migration without a network fetch.
   Future<void> reloadLocalPreferences() async {
+    await _loadMixPreferences();
     layout = await settings.layoutFor(source);
     density = await settings.feedDensity();
     themePreferenceNotifier.value = await settings.themePreference();
+    _blockedAuthors = await settings.blockedAuthors();
     _filters = ContentFilters(
+      blockedProfiles: _blockedAuthors.map((author) => author.ref.key).toSet(),
       blockedForums: await settings.blockedForums(),
       blockedKeywords: await settings.blockedKeywords(),
       hideVideos: await settings.hideVideos(),
@@ -584,6 +923,9 @@ class MixsocialController extends ChangeNotifier {
     );
     _savedKeys = (await settings.savedItems()).map((item) => item.key).toSet();
     _followingProfiles = await settings.followingProfiles();
+    _confirmedFollowing
+      ..clear()
+      ..addAll(await settings.confirmedFollowing());
     items = prepareItems(items);
     notifyListeners();
   }
@@ -625,13 +967,12 @@ class MixsocialController extends ChangeNotifier {
     _updateItem(
       item.ref,
       (FeedItem current) => current.copyWith(
-        favorited: value,
+        favorited: usesPlatform ? value : current.favorited,
+        localSaved: _savedKeys.contains(item.key),
         stats: current.stats.copyWith(
-          favorites: _changedCount(
-            current.stats.favorites,
-            current.favorited,
-            value,
-          ),
+          favorites: usesPlatform
+              ? _changedCount(current.stats.favorites, current.favorited, value)
+              : current.stats.favorites,
         ),
       ),
     );
@@ -640,7 +981,10 @@ class MixsocialController extends ChangeNotifier {
 
   bool isSaved(FeedItem item) => _savedKeys.contains(item.key);
 
-  Future<void> recordHistory(FeedItem item) => settings.addHistory(item);
+  Future<void> recordHistory(FeedItem item) async {
+    await settings.addHistory(item);
+    _readKeys.add(item.key);
+  }
 
   Future<List<FeedItem>> historyItems() async =>
       prepareItems(await settings.historyItems());
@@ -661,22 +1005,13 @@ class MixsocialController extends ChangeNotifier {
   Future<void> setLocalSaved(FeedItem item, bool value) async {
     await settings.setSaved(item, value);
     value ? _savedKeys.add(item.key) : _savedKeys.remove(item.key);
-    // Local library management must not change the platform's favorite state.
-    if (item.ref.source != SourceId.xhs) {
-      items = items.map((current) {
-        if (current.key != item.key) return current;
-        return current.copyWith(
-          favorited: value,
-          stats: current.stats.copyWith(
-            favorites: _changedCount(
-              current.stats.favorites,
-              current.favorited,
-              value,
-            ),
-          ),
-        );
-      }).toList();
-    }
+    items = items
+        .map(
+          (current) => current.key == item.key
+              ? current.copyWith(localSaved: value)
+              : current,
+        )
+        .toList();
     notifyListeners();
   }
 
@@ -749,7 +1084,7 @@ class MixsocialController extends ChangeNotifier {
   void _updateItem(ContentRef ref, FeedItem Function(FeedItem) update) {
     var changed = false;
     items = items.map((FeedItem item) {
-      if (item.ref.source != ref.source || item.ref.id != ref.id) {
+      if (item.ref.key != ref.key) {
         return item;
       }
       changed = true;
@@ -765,18 +1100,15 @@ class MixsocialController extends ChangeNotifier {
 
   List<FeedItem> prepareItems(Iterable<FeedItem> values) => _filters
       .apply(values)
-      .map(
-        (FeedItem item) =>
-            item.ref.source != SourceId.xhs &&
-                _savedKeys.contains(item.key) &&
-                !item.favorited
-            ? item.copyWith(favorited: true)
-            : item,
-      )
+      .map((item) => item.copyWith(localSaved: _savedKeys.contains(item.key)))
       .toList();
 
   List<FeedComment> prepareComments(Iterable<FeedComment> values) => values
-      .where((FeedComment item) => !_filters.blocksText(item.body))
+      .where(
+        (FeedComment item) =>
+            !_filters.blocksAuthor(item.author) &&
+            !_filters.blocksText(item.body),
+      )
       .map(
         (FeedComment item) => item.copyWith(
           media: hideMedia ? const <MediaItem>[] : item.media,
@@ -801,6 +1133,8 @@ class MixsocialController extends ChangeNotifier {
 
   void _invalidateContent({required bool clearItems}) {
     _requestVersion++;
+    sourceLoading.clear();
+    sourceErrors.clear();
     loading = false;
     loadingMore = false;
     error = null;
@@ -815,17 +1149,56 @@ class MixsocialController extends ChangeNotifier {
 
   List<FeedItem> _roundRobin(List<List<FeedItem>> groups) {
     final result = <FeedItem>[];
-    for (var index = 0; ; index++) {
+    final positions = List.filled(groups.length, 0);
+    while (true) {
       var added = false;
-      for (final group in groups) {
-        if (index < group.length) {
-          result.add(group[index]);
+      for (var index = 0; index < groups.length; index++) {
+        final group = groups[index];
+        if (group.isEmpty) continue;
+        final weight = sourceWeights[group.first.ref.source] ?? 1;
+        for (
+          var count = 0;
+          count < weight && positions[index] < group.length;
+          count++
+        ) {
+          result.add(group[positions[index]++]);
           added = true;
         }
       }
-      if (!added) return result;
+      if (!added) break;
     }
+    return unreadFirst
+        ? [
+            ...result.where((item) => !_readKeys.contains(item.key)),
+            ...result.where((item) => _readKeys.contains(item.key)),
+          ]
+        : result;
   }
+}
+
+class _FeedSession {
+  const _FeedSession(
+    this.source,
+    this.channel,
+    this.query,
+    this.layout,
+    this.items,
+    this.notices,
+    this.cursors,
+    this.more,
+    this.paginationError,
+    this.filters,
+  );
+  final XhsSearchFilters filters;
+  final SourceId source;
+  final FeedChannel channel;
+  final String query;
+  final FeedLayout layout;
+  final List<FeedItem> items;
+  final List<String> notices;
+  final Map<SourceId, String> cursors;
+  final Set<SourceId> more;
+  final String? paginationError;
 }
 
 class _PageResult {

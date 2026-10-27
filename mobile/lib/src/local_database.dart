@@ -34,7 +34,7 @@ class LibraryMetadata {
 class LocalDatabase {
   LocalDatabase._(this._database, this._clock);
 
-  static const int schemaVersion = 2;
+  static const int schemaVersion = 3;
   static const Duration feedLifetime = Duration(days: 7);
   static const int historyLimit = 100;
   static const int savedLimit = 300;
@@ -104,6 +104,7 @@ CREATE TABLE feed_entries (
         },
         onUpgrade: (Database database, int oldVersion, int newVersion) async {
           if (oldVersion < 2) await _createReadingSchema(database);
+          if (oldVersion < 3) await _migrateContentIdentity(database);
         },
       ),
     );
@@ -141,7 +142,7 @@ SELECT EXISTS(SELECT 1 FROM library_entries)
         }, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
       for (var index = 0; index < saved.length; index++) {
-        final item = saved[index].copyWith(favorited: true);
+        final item = saved[index].copyWith(localSaved: true);
         await _upsertItem(transaction, item);
         await transaction.insert('library_entries', <String, Object?>{
           'item_key': item.key,
@@ -150,7 +151,6 @@ SELECT EXISTS(SELECT 1 FROM library_entries)
         }, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
       await _trimLibrary(transaction, 'history', historyLimit);
-      await _trimLibrary(transaction, 'saved', savedLimit);
     });
   }
 
@@ -172,6 +172,17 @@ SELECT EXISTS(SELECT 1 FROM library_entries)
         'library_entries',
         where: 'kind = ?',
         whereArgs: <Object?>['history'],
+      );
+      await _deleteOrphanItems(transaction);
+    });
+  }
+
+  Future<void> clearAccountFeeds(SourceId source) async {
+    await _database.transaction((transaction) async {
+      await transaction.rawDelete(
+        'DELETE FROM feed_entries WHERE item_key IN '
+        '(SELECT item_key FROM content_items WHERE source = ?)',
+        [source.id],
       );
       await _deleteOrphanItems(transaction);
     });
@@ -203,6 +214,16 @@ ORDER BY reading_state.updated_at DESC
 
   Future<void> setReadLater(FeedItem item, bool value) async {
     await _database.transaction((Transaction transaction) async {
+      if (value) {
+        await _checkCapacity(
+          transaction,
+          'reading_state',
+          'read_later = 1',
+          item.key,
+          readLaterLimit,
+          '稍后阅读',
+        );
+      }
       if (value) await _upsertItem(transaction, item);
       final now = _nowMilliseconds();
       final updated = await transaction.update(
@@ -219,7 +240,6 @@ ORDER BY reading_state.updated_at DESC
           'updated_at': now,
         });
       }
-      await _trimReadLater(transaction);
       await _deleteOrphanItems(transaction);
     });
   }
@@ -482,13 +502,20 @@ LIMIT 200
         await _deleteOrphanItems(transaction);
         return;
       }
-      await _upsertItem(transaction, item.copyWith(favorited: true));
+      await _checkCapacity(
+        transaction,
+        'library_entries',
+        "kind = 'saved'",
+        item.key,
+        savedLimit,
+        '本地收藏',
+      );
+      await _upsertItem(transaction, item);
       await transaction.insert('library_entries', <String, Object?>{
         'item_key': item.key,
         'kind': 'saved',
         'touched_at': _nowMilliseconds(),
       }, conflictAlgorithm: ConflictAlgorithm.replace);
-      await _trimLibrary(transaction, 'saved', savedLimit);
     });
   }
 
@@ -551,7 +578,6 @@ LIMIT ?
         where: 'expires_at <= ?',
         whereArgs: <Object?>[_nowMilliseconds()],
       );
-      await _trimReadLater(transaction);
       await _deleteOrphanItems(transaction);
     });
     await _database.execute('PRAGMA incremental_vacuum(200)');
@@ -603,7 +629,7 @@ LIMIT ?
     );
     final items = _decodeItems(rows);
     return kind == 'saved'
-        ? items.map((item) => item.copyWith(favorited: true)).toList()
+        ? items.map((item) => item.copyWith(localSaved: true)).toList()
         : items;
   }
 
@@ -690,19 +716,21 @@ WHERE kind = ? AND item_key NOT IN (
     await _deleteOrphanItems(executor);
   }
 
-  Future<void> _trimReadLater(DatabaseExecutor executor) async {
-    await executor.rawUpdate(
-      '''
-UPDATE reading_state SET read_later = 0
-WHERE read_later = 1 AND item_key NOT IN (
-  SELECT item_key FROM reading_state
-  WHERE read_later = 1
-  ORDER BY updated_at DESC
-  LIMIT ?
-)
-''',
-      <Object?>[readLaterLimit],
+  Future<void> _checkCapacity(
+    DatabaseExecutor executor,
+    String table,
+    String condition,
+    String key,
+    int limit,
+    String label,
+  ) async {
+    final rows = await executor.rawQuery(
+      'SELECT COUNT(*) AS n FROM $table WHERE $condition AND item_key != ?',
+      [key],
     );
+    if ((rows.single['n'] as num).toInt() >= limit) {
+      throw FormatException('$label已满（$limit 条），请先整理；已有内容不会被移除');
+    }
   }
 
   Future<void> _deleteOrphanItems(DatabaseExecutor executor) async {
@@ -814,4 +842,49 @@ CREATE TABLE IF NOT EXISTS content_search (
   await database.execute(
     'CREATE INDEX IF NOT EXISTS collection_item_added ON collection_items(collection_id, added_at DESC)',
   );
+}
+
+Future<void> _migrateContentIdentity(DatabaseExecutor database) async {
+  final rows = await database.query('content_items');
+  for (final row in rows) {
+    final item = FeedItem.fromJson(mapOf(jsonDecode(row['payload'] as String)));
+    final oldKey = row['item_key'] as String;
+    if (oldKey == item.key) continue;
+    await database.insert('content_items', {
+      ...row,
+      'item_key': item.key,
+      'payload': jsonEncode(item.toJson()),
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    for (final table in [
+      'library_entries',
+      'feed_entries',
+      'reading_state',
+      'collection_items',
+      'item_tags',
+    ]) {
+      final children = await database.query(
+        table,
+        where: 'item_key = ?',
+        whereArgs: [oldKey],
+      );
+      for (final child in children) {
+        await database.insert(table, {
+          ...child,
+          'item_key': item.key,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      await database.delete(table, where: 'item_key = ?', whereArgs: [oldKey]);
+    }
+    await database.update(
+      'content_search',
+      {'item_key': item.key},
+      where: 'item_key = ?',
+      whereArgs: [oldKey],
+    );
+    await database.delete(
+      'content_items',
+      where: 'item_key = ?',
+      whereArgs: [oldKey],
+    );
+  }
 }

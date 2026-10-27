@@ -9,8 +9,10 @@ import 'forum_screen.dart';
 import 'library_filter.dart';
 import 'library_manager_screen.dart';
 import 'models.dart';
+import 'relationship_actions.dart';
 import 'reading_state_store.dart';
 import 'source_diagnostics.dart';
+import 'offline_screen.dart';
 
 enum LocalLibraryKind {
   history('浏览历史', Icons.history_toggle_off_rounded),
@@ -234,7 +236,7 @@ class _LocalLibraryScreenState extends State<LocalLibraryScreen> {
   @override
   Widget build(BuildContext context) {
     final visible = filterLibraryItems(
-      _items,
+      widget.controller.prepareItems(_items),
       query: _searchController.text,
       source: _source,
     );
@@ -526,6 +528,7 @@ class _ContentSettingsScreenState extends State<ContentSettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final forums = widget.controller.blockedForums.toList()..sort();
+    final authors = widget.controller.blockedAuthors;
     final keywords = widget.controller.blockedKeywords.toList()..sort();
     return Scaffold(
       appBar: AppBar(title: const Text('内容与阅读设置')),
@@ -563,6 +566,45 @@ class _ContentSettingsScreenState extends State<ContentSettingsScreen> {
             ),
           ),
           const Divider(height: 32),
+          ListTile(
+            leading: const Icon(Icons.offline_pin_outlined),
+            title: const Text('离线下载'),
+            subtitle: const Text('阅读已下载正文和图片、查看空间并删除副本'),
+            onTap: () => Navigator.push<void>(
+              context,
+              MaterialPageRoute(
+                builder: (_) =>
+                    OfflineLibraryScreen(controller: widget.controller),
+              ),
+            ),
+          ),
+          SwitchListTile(
+            title: const Text('优先显示未读内容'),
+            subtitle: const Text('按本机浏览历史排列新加载内容，不改变原站推荐'),
+            value: widget.controller.unreadFirst,
+            onChanged: (value) async {
+              await widget.controller.setUnreadFirst(value);
+              if (mounted) setState(() {});
+            },
+          ),
+          for (final source in [SourceId.tieba, SourceId.xhs, SourceId.zhihu])
+            ListTile(
+              title: Text('${source.label}混排权重'),
+              subtitle: const Text('应用于接下来各来源一起返回的内容批次'),
+              trailing: DropdownButton<int>(
+                value: widget.controller.sourceWeights[source] ?? 1,
+                items: [
+                  for (final value in [1, 2, 3])
+                    DropdownMenuItem(value: value, child: Text('$value 倍')),
+                ],
+                onChanged: (value) async {
+                  if (value == null) return;
+                  await widget.controller.setSourceWeight(source, value);
+                  if (mounted) setState(() {});
+                },
+              ),
+            ),
+          const Divider(),
           SwitchListTile(
             secondary: const Icon(Icons.hide_image_outlined),
             title: const Text('隐藏全部媒体'),
@@ -619,6 +661,28 @@ class _ContentSettingsScreenState extends State<ContentSettingsScreen> {
                   tooltip: '解除屏蔽',
                   onPressed: () async {
                     await widget.controller.setForumBlocked(forum, false);
+                    if (mounted) setState(() {});
+                  },
+                  icon: const Icon(Icons.close),
+                ),
+              ),
+          const Divider(height: 24),
+          ListTile(
+            title: Text('屏蔽的作者（${authors.length}）'),
+            subtitle: const Text('在帖子详情或作者主页中添加；仅在本机隐藏，不修改原站关系'),
+          ),
+          if (authors.isEmpty)
+            const ListTile(title: Text('未屏蔽任何作者'))
+          else
+            for (final author in authors)
+              ListTile(
+                leading: const Icon(Icons.person_off_outlined),
+                title: Text(author.name),
+                subtitle: Text('${author.ref.source.label} · ${author.ref.id}'),
+                trailing: IconButton(
+                  tooltip: '解除屏蔽作者',
+                  onPressed: () async {
+                    await toggleAuthorBlock(context, widget.controller, author);
                     if (mounted) setState(() {});
                   },
                   icon: const Icon(Icons.close),

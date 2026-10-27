@@ -53,14 +53,21 @@ const String xhsFeedScript =
     return Number.isFinite(number) ? Math.trunc(number * unit) : 0;
   };
   const first = (...values) => values.find((value) => typeof value === 'string' && value.length) || '';
-  const imageEntries = (image) => Array.isArray(image?.infoList) ? image.infoList.filter(Boolean) : [];
+  const imageEntries = (image) => {
+    const values = image?.infoList || image?.info_list || [];
+    return Array.isArray(values) ? values.filter(Boolean) : [];
+  };
   const sceneImage = (image, pattern) => imageEntries(image)
-    .find((entry) => pattern.test(String(entry.imageScene || entry.image_scene || entry.scene || '')))?.url || '';
-  const highImage = (image) => first(sceneImage(image, /ori|origin/i), image?.urlDefault,
-    sceneImage(image, /dft|default/i), image?.url,
-    ...imageEntries(image).map((entry) => entry.url), image?.urlPre);
-  const previewImage = (image) => first(image?.urlPre, sceneImage(image, /prv|preview/i),
-    image?.urlDefault, image?.url, ...imageEntries(image).map((entry) => entry.url));
+    .filter((entry) => pattern.test(String(entry.imageScene || entry.image_scene || entry.scene || '')))
+    .sort((a, b) => ((b.width || 0) * (b.height || 0)) - ((a.width || 0) * (a.height || 0)))[0]?.url || '';
+  const highImages = (image) => [...new Set([
+    image?.urlOriginal, image?.url_original, sceneImage(image, /ori|origin/i),
+    sceneImage(image, /dft|default/i), image?.urlDefault, image?.url_default,
+    image?.url, ...imageEntries(image).map((entry) => entry.url), image?.urlPre, image?.url_pre,
+  ].filter((value) => typeof value === 'string' && value.length))];
+  const highImage = (image) => highImages(image)[0] || '';
+  const previewImage = (image) => first(image?.urlPre, image?.url_pre, sceneImage(image, /prv|preview/i),
+    image?.urlDefault, image?.url_default, image?.url, ...imageEntries(image).map((entry) => entry.url));
   const items = feeds.filter((feed) => feed && (!feed.modelType || feed.modelType === 'note')).map((feed) => {
     const card = feed.noteCard || {};
     const user = card.user || {};
@@ -81,7 +88,7 @@ const String xhsFeedScript =
     const media = coverUrl ? [{
       kind: card.type === 'video' ? 'video' : 'image',
       url: card.type === 'video' ? videoUrl : coverUrl,
-      previewUrl: coverPreviewUrl || coverUrl,
+      previewUrl: coverPreviewUrl || coverUrl, imageUrls: highImages(cover),
       width: cover.width || 0,
       height: cover.height || 0,
       durationMilliseconds: card.video && card.video.capa ? (card.video.capa.duration || 0) * 1000 : 0,
@@ -103,7 +110,9 @@ const String xhsFeedScript =
       media, liked: info.liked === true, favorited: info.collected === true,
     };
   }).filter((item) => item.ref.id);
-  return JSON.stringify({items});
+  const more = unwrap(state.feed?.hasMore ?? state.feed?.has_more);
+  const ended = !!document.querySelector('.feeds-container .end-container');
+  return JSON.stringify({items, hasMore: !ended && more !== false && items.length > 0});
 })()''';
 
 String xhsDetailScript(String feedId, String xsecToken) =>
@@ -123,18 +132,26 @@ String xhsDetailScript(String feedId, String xsecToken) =>
   const info = field(note, 'interactInfo', 'interact_info') || {};
   const token = field(note, 'xsecToken', 'xsec_token') || ${jsonEncode(xsecToken)};
   const first = (...values) => values.find((value) => typeof value === 'string' && value.length) || '';
-  const imageEntries = (image) => Array.isArray(image?.infoList) ? image.infoList.filter(Boolean) : [];
+  const imageEntries = (image) => {
+    const values = image?.infoList || image?.info_list || [];
+    return Array.isArray(values) ? values.filter(Boolean) : [];
+  };
   const sceneImage = (image, pattern) => imageEntries(image)
-    .find((entry) => pattern.test(String(entry.imageScene || entry.image_scene || entry.scene || '')))?.url || '';
-  const highImage = (image) => first(sceneImage(image, /ori|origin/i), image?.urlDefault,
-    sceneImage(image, /dft|default/i), image?.url,
-    ...imageEntries(image).map((entry) => entry.url), image?.urlPre);
-  const previewImage = (image) => first(image?.urlPre, sceneImage(image, /prv|preview/i),
-    image?.urlDefault, image?.url, ...imageEntries(image).map((entry) => entry.url));
-  let media = Array.isArray(note.imageList) ? note.imageList.map((image) => ({
+    .filter((entry) => pattern.test(String(entry.imageScene || entry.image_scene || entry.scene || '')))
+    .sort((a, b) => ((b.width || 0) * (b.height || 0)) - ((a.width || 0) * (a.height || 0)))[0]?.url || '';
+  const highImages = (image) => [...new Set([
+    image?.urlOriginal, image?.url_original, sceneImage(image, /ori|origin/i),
+    sceneImage(image, /dft|default/i), image?.urlDefault, image?.url_default,
+    image?.url, ...imageEntries(image).map((entry) => entry.url), image?.urlPre, image?.url_pre,
+  ].filter((value) => typeof value === 'string' && value.length))];
+  const highImage = (image) => highImages(image)[0] || '';
+  const previewImage = (image) => first(image?.urlPre, image?.url_pre, sceneImage(image, /prv|preview/i),
+    image?.urlDefault, image?.url_default, image?.url, ...imageEntries(image).map((entry) => entry.url));
+  const noteImages = field(note, 'imageList', 'image_list');
+  let media = Array.isArray(noteImages) ? noteImages.map((image) => ({
     kind: 'image',
     url: highImage(image),
-    previewUrl: previewImage(image),
+    previewUrl: previewImage(image), imageUrls: highImages(image),
     width: image.width || 0, height: image.height || 0,
   })).filter((media) => media.url) : [];
   const streamGroups = note.video?.media?.stream || {};
@@ -181,7 +198,7 @@ String xhsDetailScript(String feedId, String xsecToken) =>
       replyCount: Math.max(count(field(comment, 'subCommentCount', 'sub_comment_count')), replies.length), replies,
       media: pictureList.map((picture) => ({
         kind: 'image', url: highImage(picture),
-        previewUrl: previewImage(picture),
+        previewUrl: previewImage(picture), imageUrls: highImages(picture),
         width: picture.width || 0, height: picture.height || 0,
       })).filter((media) => media.url),
     };
@@ -244,14 +261,21 @@ String xhsFloorRepliesScript(String feedId, String commentId) =>
     return Number.isFinite(number) ? Math.trunc(number * unit) : 0;
   };
   const first = (...values) => values.find((value) => typeof value === 'string' && value.length) || '';
-  const imageEntries = (image) => Array.isArray(image?.infoList) ? image.infoList.filter(Boolean) : [];
+  const imageEntries = (image) => {
+    const values = image?.infoList || image?.info_list || [];
+    return Array.isArray(values) ? values.filter(Boolean) : [];
+  };
   const sceneImage = (image, pattern) => imageEntries(image)
-    .find((entry) => pattern.test(String(entry.imageScene || entry.image_scene || entry.scene || '')))?.url || '';
-  const highImage = (image) => first(sceneImage(image, /ori|origin/i), image?.urlDefault,
-    sceneImage(image, /dft|default/i), image?.url,
-    ...imageEntries(image).map((entry) => entry.url), image?.urlPre);
-  const previewImage = (image) => first(image?.urlPre, sceneImage(image, /prv|preview/i),
-    image?.urlDefault, image?.url, ...imageEntries(image).map((entry) => entry.url));
+    .filter((entry) => pattern.test(String(entry.imageScene || entry.image_scene || entry.scene || '')))
+    .sort((a, b) => ((b.width || 0) * (b.height || 0)) - ((a.width || 0) * (a.height || 0)))[0]?.url || '';
+  const highImages = (image) => [...new Set([
+    image?.urlOriginal, image?.url_original, sceneImage(image, /ori|origin/i),
+    sceneImage(image, /dft|default/i), image?.urlDefault, image?.url_default,
+    image?.url, ...imageEntries(image).map((entry) => entry.url), image?.urlPre, image?.url_pre,
+  ].filter((value) => typeof value === 'string' && value.length))];
+  const highImage = (image) => highImages(image)[0] || '';
+  const previewImage = (image) => first(image?.urlPre, image?.url_pre, sceneImage(image, /prv|preview/i),
+    image?.urlDefault, image?.url_default, image?.url, ...imageEntries(image).map((entry) => entry.url));
   const targetId = ${jsonEncode(commentId)};
   const root = commentRoot(targetId);
   const parent = liveComment(root, targetId)
@@ -284,7 +308,7 @@ String xhsFloorRepliesScript(String feedId, String commentId) =>
       replyCount: count(field(comment, 'subCommentCount', 'sub_comment_count')),
       media: pictureList.map((picture) => ({
         kind: 'image', url: highImage(picture),
-        previewUrl: previewImage(picture),
+        previewUrl: previewImage(picture), imageUrls: highImages(picture),
         width: picture.width || 0, height: picture.height || 0,
       })).filter((media) => media.url),
     };
@@ -343,14 +367,21 @@ String xhsProfileScript(
     return Number.isFinite(number) ? Math.trunc(number * unit) : 0;
   };
   const first = (...values) => values.find((value) => typeof value === 'string' && value.length) || '';
-  const imageEntries = (image) => Array.isArray(image?.infoList) ? image.infoList.filter(Boolean) : [];
+  const imageEntries = (image) => {
+    const values = image?.infoList || image?.info_list || [];
+    return Array.isArray(values) ? values.filter(Boolean) : [];
+  };
   const sceneImage = (image, pattern) => imageEntries(image)
-    .find((entry) => pattern.test(String(entry.imageScene || entry.image_scene || entry.scene || '')))?.url || '';
-  const highImage = (image) => first(sceneImage(image, /ori|origin/i), image?.urlDefault,
-    sceneImage(image, /dft|default/i), image?.url,
-    ...imageEntries(image).map((entry) => entry.url), image?.urlPre);
-  const previewImage = (image) => first(image?.urlPre, sceneImage(image, /prv|preview/i),
-    image?.urlDefault, image?.url, ...imageEntries(image).map((entry) => entry.url));
+    .filter((entry) => pattern.test(String(entry.imageScene || entry.image_scene || entry.scene || '')))
+    .sort((a, b) => ((b.width || 0) * (b.height || 0)) - ((a.width || 0) * (a.height || 0)))[0]?.url || '';
+  const highImages = (image) => [...new Set([
+    image?.urlOriginal, image?.url_original, sceneImage(image, /ori|origin/i),
+    sceneImage(image, /dft|default/i), image?.urlDefault, image?.url_default,
+    image?.url, ...imageEntries(image).map((entry) => entry.url), image?.urlPre, image?.url_pre,
+  ].filter((value) => typeof value === 'string' && value.length))];
+  const highImage = (image) => highImages(image)[0] || '';
+  const previewImage = (image) => first(image?.urlPre, image?.url_pre, sceneImage(image, /prv|preview/i),
+    image?.urlDefault, image?.url_default, image?.url, ...imageEntries(image).map((entry) => entry.url));
   const items = feeds.filter((feed) => feed && (!feed.modelType || feed.modelType === 'note')).map((feed) => {
     const card = feed.noteCard || {};
     const user = card.user || {};
@@ -387,7 +418,7 @@ String xhsProfileScript(
       },
       media: coverUrl ? [{
         kind: card.type === 'video' ? 'video' : 'image',
-        url: card.type === 'video' ? videoUrl : coverUrl, previewUrl: coverPreviewUrl || coverUrl,
+        url: card.type === 'video' ? videoUrl : coverUrl, previewUrl: coverPreviewUrl || coverUrl, imageUrls: highImages(cover),
         width: cover.width || 0, height: cover.height || 0,
         durationMilliseconds: card.video?.capa ? (card.video.capa.duration || 0) * 1000 : 0,
       }] : [],

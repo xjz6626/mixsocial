@@ -143,7 +143,7 @@ func itemFromTarget(target map[string]any) (domain.Item, bool) {
 	}
 	item := domain.Item{
 		Ref: domain.Ref{
-			Source: domain.SourceZhihu, ID: id, ParentID: parentID, Token: kind,
+			Source: domain.SourceZhihu, ID: id, ParentID: parentID, Token: kind, Kind: kind,
 			URL: contentURL(kind, id, parentID),
 		},
 		Title: title, Summary: summary, Author: author,
@@ -177,20 +177,37 @@ func detailFromTarget(target map[string]any) domain.Detail {
 	}
 	body := contentText(firstValue(target["content"], target["detail"], target["excerpt_new"], target["excerpt"], target["description"]))
 	media := append([]domain.Media(nil), item.Media...)
+	detail := domain.Detail{Item: item, Body: strings.TrimSpace(body)}
 	if item.Ref.Token == "question" {
-		for _, rawAnswer := range sliceValue(target["top_answers"]) {
-			answer := mapValue(rawAnswer)
-			answerBody := contentText(firstValue(answer["content"], answer["excerpt_new"], answer["excerpt"]))
-			if answerBody == "" {
-				continue
-			}
-			author := authorFromMap(mapValue(answer["author"]))
-			body += "\n\n热门回答 · " + firstNonEmpty(author.Name, "匿名用户") + "\n" + answerBody
-			media = appendUniqueMedia(media, mediaFromTarget(answer)...)
+		page := answerPage(map[string]any{"data": target["top_answers"], "paging": target["answer_paging"]}, item.Ref.ID, "")
+		detail.Answers, detail.AnswersNextCursor, detail.AnswersHasMore = page.Items, page.NextCursor, page.HasMore
+	} else if raw, ok := target["content"].(string); ok {
+		detail.ContentHTML = raw
+	}
+	detail.Media = media
+	return detail
+}
+
+func answerPage(response map[string]any, questionID, cursor string) domain.Page {
+	page := domain.Page{}
+	for _, value := range sliceValue(response["data"]) {
+		answer := cloneMap(mapValue(value))
+		answer["type"] = "answer"
+		if item, ok := itemFromTarget(answer); ok {
+			item.Ref.ParentID = questionID
+			item.Ref.URL = contentURL("answer", item.Ref.ID, questionID)
+			page.Items = append(page.Items, item)
 		}
 	}
-	item.Media = media
-	return domain.Detail{Item: item, Body: strings.TrimSpace(body)}
+	paging := mapValue(response["paging"])
+	if next, err := url.Parse(stringValue(paging["next"])); err == nil {
+		page.NextCursor = next.Query().Get("offset")
+	}
+	if _, err := strconv.Atoi(page.NextCursor); err != nil {
+		page.NextCursor = ""
+	}
+	page.HasMore = !boolValue(paging["is_end"]) && page.NextCursor != "" && page.NextCursor != cursor
+	return page
 }
 
 func authorFromMap(raw map[string]any) domain.Author {

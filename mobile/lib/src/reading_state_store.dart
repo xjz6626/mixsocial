@@ -8,6 +8,7 @@ class ReadingState {
     this.page = 1,
     this.offset = 0,
     this.floor = 0,
+    this.replyCount = 0,
     this.anchorId = '',
     this.reverse = false,
     this.onlyOriginalPoster = false,
@@ -18,6 +19,7 @@ class ReadingState {
   final int page;
   final double offset;
   final int floor;
+  final int replyCount;
   final String anchorId;
   final bool reverse;
   final bool onlyOriginalPoster;
@@ -36,6 +38,7 @@ class ReadingState {
     page: page,
     offset: offset,
     floor: floor,
+    replyCount: replyCount,
     anchorId: anchorId,
     reverse: reverse,
     onlyOriginalPoster: onlyOriginalPoster,
@@ -47,6 +50,7 @@ class ReadingState {
     'page': page.clamp(1, 100000),
     'offset': offset.isFinite ? offset.clamp(-10000000, 10000000) : 0,
     'floor': floor.clamp(0, 10000000),
+    'replyCount': replyCount.clamp(0, 10000000),
     'anchorId': anchorId,
     'reverse': reverse,
     'onlyOriginalPoster': onlyOriginalPoster,
@@ -63,6 +67,9 @@ class ReadingState {
           : 0,
       floor: value['floor'] is int
           ? (value['floor'] as int).clamp(0, 10000000)
+          : 0,
+      replyCount: value['replyCount'] is int
+          ? (value['replyCount'] as int).clamp(0, 10000000)
           : 0,
       anchorId: value['anchorId'] is String ? value['anchorId'] as String : '',
       reverse: value['reverse'] == true,

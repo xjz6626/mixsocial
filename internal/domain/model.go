@@ -32,6 +32,7 @@ type Ref struct {
 	ParentID string   `json:"parentId,omitempty"`
 	Token    string   `json:"token,omitempty"`
 	URL      string   `json:"url,omitempty"`
+	Kind     string   `json:"kind,omitempty"`
 }
 
 // ProfileRef identifies an account on one source. Token is source-owned and
@@ -104,12 +105,18 @@ type CommentPage struct {
 
 type Detail struct {
 	Item
-	Body        string    `json:"body"`
-	Comments    []Comment `json:"comments,omitempty"`
-	NextCursor  string    `json:"nextCursor,omitempty"`
-	HasMore     bool      `json:"hasMore,omitempty"`
-	CurrentPage int       `json:"currentPage,omitempty"`
-	TotalPages  int       `json:"totalPages,omitempty"`
+	Body              string    `json:"body"`
+	Comments          []Comment `json:"comments,omitempty"`
+	NextCursor        string    `json:"nextCursor,omitempty"`
+	HasMore           bool      `json:"hasMore,omitempty"`
+	CurrentPage       int       `json:"currentPage,omitempty"`
+	TotalPages        int       `json:"totalPages,omitempty"`
+	ContentHTML       string    `json:"contentHtml,omitempty"`
+	Answers           []Item    `json:"answers,omitempty"`
+	AnswersNextCursor string    `json:"answersNextCursor,omitempty"`
+	AnswersHasMore    bool      `json:"answersHasMore,omitempty"`
+	CommentsPending   bool      `json:"commentsPending,omitempty"`
+	CommentsError     string    `json:"commentsError,omitempty"`
 }
 
 type Page struct {

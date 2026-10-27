@@ -94,8 +94,19 @@ func (z *Zhihu) DetailWithRequest(requestID, refJSON string) (string, error) {
 	}
 	ctx, finish := z.begin(requestID)
 	defer finish()
-	detail, err := z.snapshot().Detail(ctx, ref)
+	detail, err := z.snapshot().Content(ctx, ref)
 	return encode(detail, err)
+}
+
+func (z *Zhihu) AnswersWithRequest(requestID, refJSON, cursor string) (string, error) {
+	ref, err := zhihuRef(refJSON)
+	if err != nil {
+		return "", err
+	}
+	ctx, finish := z.begin(requestID)
+	defer finish()
+	page, err := z.snapshot().Answers(ctx, ref, cursor)
+	return encode(page, err)
 }
 
 func (z *Zhihu) CommentsWithRequest(requestID, refJSON, cursor string) (string, error) {
@@ -117,6 +128,27 @@ func (z *Zhihu) LikeWithRequest(requestID, refJSON string, value bool) error {
 	ctx, finish := z.begin(requestID)
 	defer finish()
 	return z.snapshot().Like(ctx, ref, value)
+}
+
+func (z *Zhihu) FollowWithRequest(requestID, refJSON string, value bool) error {
+	ref, err := relationshipRef(refJSON, domain.SourceZhihu)
+	if err != nil {
+		return err
+	}
+	ctx, finish := z.begin(requestID)
+	defer finish()
+	return z.snapshot().Follow(ctx, ref, value)
+}
+
+func (z *Zhihu) FollowingWithRequest(requestID, refJSON string) (string, error) {
+	ref, err := relationshipRef(refJSON, domain.SourceZhihu)
+	if err != nil {
+		return "", err
+	}
+	ctx, finish := z.begin(requestID)
+	defer finish()
+	value, err := z.snapshot().Following(ctx, ref)
+	return encode(map[string]bool{"following": value}, err)
 }
 
 func (z *Zhihu) CommentWithRequest(requestID, refJSON, body string) error {

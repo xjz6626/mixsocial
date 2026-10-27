@@ -29,13 +29,21 @@ class LibraryOrganization {
     Map<String, List<String>> strings(Object? value) => mapOf(value).map(
       (key, value) => MapEntry(key, listOf(value).whereType<String>().toList()),
     );
+    final items = listOfMaps(json['items']).map(FeedItem.fromJson).toList();
+    final keys = <String, String>{
+      for (final item in items) item.ref.legacyKey: item.key,
+    };
     return LibraryOrganization(
-      collections: strings(json['collections']),
-      tags: strings(json['tags']),
-      items: {
-        for (final value in listOfMaps(json['items']))
-          FeedItem.fromJson(value).key: FeedItem.fromJson(value),
-      },
+      collections: strings(json['collections']).map(
+        (name, members) => MapEntry(
+          name,
+          members.map((key) => keys[key] ?? key).toSet().toList(),
+        ),
+      ),
+      tags: strings(
+        json['tags'],
+      ).map((key, tags) => MapEntry(keys[key] ?? key, tags)),
+      items: {for (final item in items) item.key: item},
     );
   }
 }
@@ -44,10 +52,7 @@ class LibraryOrganization {
 /// visible fallback state and explicit edits. Recovery replays edits, never an
 /// older snapshot, so newer database-only items are retained.
 class LibraryOrganizerStore {
-  LibraryOrganizerStore({
-    required this._preferences,
-    this._database,
-  });
+  LibraryOrganizerStore({required this._preferences, this._database});
 
   static const preferenceKey = 'library.organization.v1';
   static Future<void>? _tail;
@@ -60,7 +65,11 @@ class LibraryOrganizerStore {
     void finished() {
       if (identical(_tail, tail)) _tail = null;
     }
-    tail = result.then<void>((_) => finished(), onError: (Object _) => finished());
+
+    tail = result.then<void>(
+      (_) => finished(),
+      onError: (Object _) => finished(),
+    );
     _tail = tail;
     return result;
   }

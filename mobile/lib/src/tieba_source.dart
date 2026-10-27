@@ -6,6 +6,7 @@ import 'package:mixsocial_core/mixsocial_core.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import 'models.dart';
+import 'content_filters.dart';
 import 'source.dart';
 import 'source_diagnostics.dart';
 
@@ -15,7 +16,9 @@ class TiebaSource
         ForumReader,
         ThreadPageReader,
         FloorReplyReader,
-        ProfileReader {
+        ProfileReader,
+        RelationshipInteractor,
+        RelationshipStateReader {
   TiebaSource._(this._secureStorage);
 
   static const _credentialKey = 'tieba.bduss';
@@ -71,6 +74,7 @@ class TiebaSource
     SourceCapability.hot,
     SourceCapability.followingFeed,
     SourceCapability.login,
+    SourceCapability.follow,
   };
 
   @override
@@ -125,6 +129,49 @@ class TiebaSource
         .map((Object? value) => value.toString())
         .where((String value) => value.isNotEmpty)
         .toList();
+  }
+
+  @override
+  Future<void> follow(ProfileRef profile, bool value) async {
+    _validateProfile(profile);
+    await _startup;
+    await MixsocialCore.followTieba(jsonEncode(profile.toJson()), value);
+  }
+
+  @override
+  Future<bool> following(ProfileRef profile) async {
+    _validateProfile(profile);
+    await _startup;
+    return _followingState(
+      await MixsocialCore.followingTieba(jsonEncode(profile.toJson())),
+    );
+  }
+
+  Future<void> followForum(String forum, bool value) async {
+    final name = normalizeForumName(forum);
+    if (name.isEmpty) throw ArgumentError('贴吧名称不能为空');
+    await _startup;
+    await MixsocialCore.followForumTieba(name, value);
+  }
+
+  Future<bool> forumFollowing(String forum) async {
+    final name = normalizeForumName(forum);
+    if (name.isEmpty) throw ArgumentError('贴吧名称不能为空');
+    await _startup;
+    return _followingState(await MixsocialCore.forumFollowingTieba(name));
+  }
+
+  bool _followingState(String response) {
+    final value = mapOf(jsonDecode(response))['following'];
+    if (value is! bool) throw StateError('贴吧未返回关注状态，请刷新核对');
+    return value;
+  }
+
+  void _validateProfile(ProfileRef profile) {
+    if (profile.source != SourceId.tieba ||
+        !RegExp(r'^[1-9][0-9]*$').hasMatch(profile.id)) {
+      throw ArgumentError('无效的贴吧作者编号');
+    }
   }
 
   @override
@@ -190,6 +237,34 @@ class TiebaSource
     await _startup;
     return FeedCommentPage.decode(
       await MixsocialCore.floorRepliesTieba(jsonEncode(floor.toJson()), cursor),
+    );
+  }
+
+  Future<WebViewController> authorInteractionController(ProfileRef ref) {
+    final uri = Uri.tryParse(ref.url);
+    if (ref.source != SourceId.tieba ||
+        ref.id.trim().isEmpty ||
+        uri == null ||
+        uri.host != 'tieba.baidu.com' ||
+        uri.path != '/home/main' ||
+        uri.userInfo.isNotEmpty ||
+        (uri.queryParameters['un'] ?? '').trim().isEmpty) {
+      throw ArgumentError('当前作者没有可确认的贴吧官方主页');
+    }
+    return interactionController(
+      ContentRef(source: SourceId.tieba, id: ref.id, url: uri.toString()),
+    );
+  }
+
+  Future<WebViewController> forumInteractionController(String forum) {
+    final name = normalizeForumName(forum);
+    if (name.isEmpty) throw ArgumentError('贴吧名称不能为空');
+    return interactionController(
+      ContentRef(
+        source: SourceId.tieba,
+        id: name,
+        url: Uri.https('tieba.baidu.com', '/f', {'kw': name}).toString(),
+      ),
     );
   }
 
